@@ -20,6 +20,11 @@ def build_report(storage: Storage, output: Path, top: int = 50) -> Path:
     status = storage.status()
     pairs = storage.latest_market_pairs("commodity")
     signals = [signal_from_pair(current, previous) for current, previous in pairs]
+    signals = [
+        signal for signal in signals
+        if signal.total_quantity >= 100
+        and signal.approx_market_value >= 1000 * 10_000
+    ]
     signals.sort(key=lambda s: s.pressure_score, reverse=True)
     signals = signals[:top]
 
@@ -42,7 +47,7 @@ def build_report(storage: Storage, output: Path, top: int = 50) -> Path:
         f"""<tr>
 <td>{row['rank']}</td>
 <td>{escape(str(row['name']))}<br><small>{row['item_id']}</small></td>
-<td>{escape(_money(row['best_price']))}</td>
+<td>{escape(_money(row['reference_price']))}</td>
 <td>{row['price_change_pct']:+.1f}%</td>
 <td>{row['quantity_change_pct']:+.1f}%</td>
 <td>{row['depth_5_change_pct']:+.1f}%</td>
@@ -87,14 +92,15 @@ small {{ opacity: .65; }}
 <h2>Market pressure watch</h2>
 <table>
 <thead><tr>
-<th>#</th><th>Item</th><th>Best price</th><th>Price Δ</th><th>Qty Δ</th><th>5% depth Δ</th><th>5% depth ETA</th><th>Pressure</th>
+<th>#</th><th>Item</th><th>Reference price</th><th>Ref price Δ</th><th>Qty Δ</th><th>Near-market Δ</th><th>Near-market ETA</th><th>Pressure</th>
 </tr></thead>
 <tbody>
 {body_rows}
 </tbody>
 </table>
 <div class="note">
-<strong>Interpretation:</strong> Pressure is an explainable attention-ranking heuristic, not a buy or sell instruction.
+<strong>Interpretation:</strong> Reference price ignores tiny floor listings by pricing the first meaningful slice of visible inventory.
+Pressure is an explainable attention-ranking heuristic, not a buy or sell instruction.
 Observed depletion is not confirmed sales. Auctions can disappear because of purchases, cancellations, expirations, or reposting.
 </div>
 </body>
