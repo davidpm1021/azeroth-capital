@@ -27,8 +27,16 @@ CREATE TABLE IF NOT EXISTS collection_run (
     source TEXT NOT NULL,
     payload_hash TEXT NOT NULL,
     raw_path TEXT,
+    source_modified_at TEXT,
     success INTEGER NOT NULL DEFAULT 0,
     error TEXT
+);
+
+CREATE TABLE IF NOT EXISTS source_state (
+    source TEXT PRIMARY KEY,
+    last_modified TEXT,
+    last_payload_hash TEXT,
+    updated_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS commodity_level (
@@ -109,6 +117,16 @@ class Storage:
     def init(self) -> None:
         with self.connect() as conn:
             conn.executescript(SCHEMA)
+            self._migrate(conn)
+
+    @staticmethod
+    def _migrate(conn: sqlite3.Connection) -> None:
+        columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(collection_run)").fetchall()
+        }
+        if "source_modified_at" not in columns:
+            conn.execute("ALTER TABLE collection_run ADD COLUMN source_modified_at TEXT")
 
     def raw_path_for_hash(self, source: str, digest: str) -> Path | None:
         with self.connect() as conn:
@@ -140,21 +158,65 @@ class Storage:
             )
         return path
 
-    def begin_run(self, region: str, source: str, digest: str, raw_path: Path) -> int:
+    def last_modified_for_source(self, source: str) -> str | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT last_modified FROM source_state WHERE source=?",
+                (source,),
+            ).fetchone()
+        return row["last_modified"] if row and row["last_modified"] else None
+
+    def begin_run(
+        self,
+        region: str,
+        source: str,
+        digest: str,
+        raw_path: Path,
+        source_modified_at: str | None = None,
+    ) -> int:
         with self.connect() as conn:
             cur = conn.execute(
-                """INSERT INTO collection_run(started_at, region, source, payload_hash, raw_path)
-                   VALUES (?, ?, ?, ?, ?)""",
-                (datetime.now(UTC).isoformat(), region, source, digest, str(raw_path)),
+                """INSERT INTO collection_run(
+                       started_at,region,source,payload_hash,raw_path,source_modified_at
+                   ) VALUES (?,?,?,?,?,?)""",
+                (
+                    datetime.now(UTC).isoformat(),
+                    region,
+                    source,
+                    digest,
+                    str(raw_path),
+                    source_modified_at,
+                ),
             )
             return int(cur.lastrowid)
 
     def finish_run(self, run_id: int, error: str | None = None) -> None:
+        now = datetime.now(UTC).isoformat()
         with self.connect() as conn:
             conn.execute(
                 "UPDATE collection_run SET completed_at=?, success=?, error=? WHERE id=?",
-                (datetime.now(UTC).isoformat(), 0 if error else 1, error, run_id),
+                (now, 0 if error else 1, error, run_id),
             )
+            if error is None:
+                run = conn.execute(
+                    """SELECT source,payload_hash,source_modified_at
+                       FROM collection_run WHERE id=?""",
+                    (run_id,),
+                ).fetchone()
+                conn.execute(
+                    """INSERT INTO source_state(source,last_modified,last_payload_hash,updated_at)
+                       VALUES (?,?,?,?)
+                       ON CONFLICT(source) DO UPDATE SET
+                           last_modified=COALESCE(excluded.last_modified,source_state.last_modified),
+                           last_payload_hash=excluded.last_payload_hash,
+                           updated_at=excluded.updated_at""",
+                    (
+                        run["source"],
+                        run["source_modified_at"],
+                        run["payload_hash"],
+                        now,
+                    ),
+                )
 
     def insert_commodity_levels(self, run_id: int, levels: Iterable[dict]) -> None:
         with self.connect() as conn:
@@ -229,7 +291,7 @@ class Storage:
                 "SELECT COUNT(*) AS n FROM collection_run WHERE success=1"
             ).fetchone()["n"]
             latest = conn.execute(
-                """SELECT started_at,source,payload_hash
+                """SELECT started_at,source_modified_at,source,payload_hash
                    FROM collection_run
                    WHERE success=1
                    ORDER BY id DESC LIMIT 1"""
@@ -249,17 +311,29 @@ class Storage:
 
     def latest_market_pairs(self, market_type: str = "commodity") -> list[tuple[dict, dict]]:
         sql = """
-        WITH ranked AS (
+        WITH unique_runs AS (
+            SELECT
+                cr.*,
+                ROW_NUMBER() OVER (
+                    PARTITION BY cr.source, cr.payload_hash
+                    ORDER BY cr.id
+                ) AS payload_rank
+            FROM collection_run cr
+            WHERE cr.success=1
+        ),
+        ranked AS (
             SELECT
                 mo.*,
-                cr.started_at,
+                ur.started_at,
+                ur.source_modified_at,
+                COALESCE(ur.source_modified_at, ur.started_at) AS observed_at,
                 ROW_NUMBER() OVER (
                     PARTITION BY mo.item_id, mo.connected_realm_id
-                    ORDER BY cr.started_at DESC, mo.run_id DESC
+                    ORDER BY COALESCE(ur.source_modified_at, ur.started_at) DESC, mo.run_id DESC
                 ) AS rn
             FROM market_observation mo
-            JOIN collection_run cr ON cr.id = mo.run_id
-            WHERE cr.success=1 AND mo.market_type=?
+            JOIN unique_runs ur ON ur.id = mo.run_id
+            WHERE ur.payload_rank=1 AND mo.market_type=?
         )
         SELECT * FROM ranked WHERE rn <= 2
         ORDER BY item_id, connected_realm_id, rn
@@ -312,13 +386,17 @@ class Storage:
             )
 
     def export_observations(self, output: Path, item_id: int | None = None) -> int:
-        sql = """SELECT cr.started_at, mo.* FROM market_observation mo
+        sql = """SELECT
+                     COALESCE(cr.source_modified_at,cr.started_at) AS observed_at,
+                     cr.started_at AS collected_at,
+                     mo.*
+                 FROM market_observation mo
                  JOIN collection_run cr ON cr.id=mo.run_id"""
         params: tuple = ()
         if item_id is not None:
             sql += " WHERE mo.item_id=?"
             params = (item_id,)
-        sql += " ORDER BY cr.started_at, mo.item_id"
+        sql += " ORDER BY observed_at, mo.item_id"
 
         with self.connect() as conn:
             rows = conn.execute(sql, params).fetchall()
