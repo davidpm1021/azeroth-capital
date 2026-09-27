@@ -114,6 +114,7 @@ def signal_from_history(history: list[dict]) -> MarketSignal:
 
     # Bounded and persistence-aware. Latest movement matters, but repeated
     # tightening across several Blizzard snapshots matters more.
+    persistence_evidence = min(interval_count / 4.0, 1.0)
     pressure = (
         min(max(price_change, 0.0), 100.0) * 0.30
         + min(max(baseline_price_change, 0.0), 100.0) * 0.35
@@ -121,7 +122,7 @@ def signal_from_history(history: list[dict]) -> MarketSignal:
         + min(max(-baseline_depth_change, 0.0), 100.0) * 0.25
         + min(max(-quantity_change, 0.0), 100.0) * 0.10
         + min(max(-baseline_quantity_change, 0.0), 100.0) * 0.10
-        + persistence * 30.0
+        + persistence * 30.0 * persistence_evidence
     )
 
     return MarketSignal(
