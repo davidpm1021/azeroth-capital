@@ -12,13 +12,16 @@ class MarketSignal:
     current_at: str
     previous_at: str
     best_price: int
+    reference_price: int
     total_quantity: int
-    depth_5pct: int
+    reference_depth_5pct: int
+    approx_market_value: int
     price_change_pct: float
     quantity_change_pct: float
     depth_5_change_pct: float
     observed_depletion_per_hour: float
     depth_5_eta_hours: float | None
+    floor_gap_pct: float
     pressure_score: float
 
 
@@ -46,36 +49,51 @@ def signal_from_pair(current: dict, previous: dict) -> MarketSignal:
     previous_at = _parse_timestamp(previous_stamp)
     elapsed_hours = max((current_at - previous_at).total_seconds() / 3600.0, 1 / 3600)
 
-    price_change = _pct_change(current["best_price"], previous["best_price"])
+    current_reference = int(current.get("reference_price") or current["best_price"])
+    previous_reference = int(previous.get("reference_price") or previous["best_price"])
+    current_depth = int(current.get("reference_depth_5pct") or current["depth_5pct"])
+    previous_depth = int(previous.get("reference_depth_5pct") or previous["depth_5pct"])
+
+    price_change = _pct_change(current_reference, previous_reference)
     quantity_change = _pct_change(current["total_quantity"], previous["total_quantity"])
-    depth_change = _pct_change(current["depth_5pct"], previous["depth_5pct"])
+    depth_change = _pct_change(current_depth, previous_depth)
 
     depletion = max(float(previous["total_quantity"] - current["total_quantity"]), 0.0) / elapsed_hours
-    depth_depletion = max(float(previous["depth_5pct"] - current["depth_5pct"]), 0.0) / elapsed_hours
+    depth_depletion = max(float(previous_depth - current_depth), 0.0) / elapsed_hours
 
     eta = None
     if depth_depletion > 0:
-        candidate = current["depth_5pct"] / depth_depletion
+        candidate = current_depth / depth_depletion
         if isfinite(candidate) and candidate >= 0:
             eta = candidate
 
-    pressure = (
-        max(price_change, 0.0) * 1.5
-        + max(-quantity_change, 0.0) * 0.4
-        + max(-depth_change, 0.0) * 0.8
-    )
+    best_price = int(current["best_price"])
+    floor_gap = _pct_change(best_price, current_reference)
+
+    # Bounded heuristic. A 100x move should attract attention, but it should not
+    # numerically overwhelm every other market signal.
+    price_component = min(max(price_change, 0.0), 100.0) * 0.8
+    quantity_component = min(max(-quantity_change, 0.0), 100.0) * 0.25
+    depth_component = min(max(-depth_change, 0.0), 100.0) * 0.6
+    pressure = price_component + quantity_component + depth_component
 
     return MarketSignal(
         item_id=int(current["item_id"]),
         current_at=current_stamp,
         previous_at=previous_stamp,
-        best_price=int(current["best_price"]),
+        best_price=best_price,
+        reference_price=current_reference,
         total_quantity=int(current["total_quantity"]),
-        depth_5pct=int(current["depth_5pct"]),
+        reference_depth_5pct=current_depth,
+        approx_market_value=int(
+            current.get("approx_market_value")
+            or (current_reference * int(current["total_quantity"]))
+        ),
         price_change_pct=price_change,
         quantity_change_pct=quantity_change,
         depth_5_change_pct=depth_change,
         observed_depletion_per_hour=depletion,
         depth_5_eta_hours=eta,
+        floor_gap_pct=floor_gap,
         pressure_score=pressure,
     )
