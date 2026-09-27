@@ -1,4 +1,4 @@
-from azeroth_capital.temporal import signal_from_pair
+from azeroth_capital.temporal import signal_from_history, signal_from_pair
 
 
 def test_pressure_signal_detects_tightening_market():
@@ -53,3 +53,47 @@ def test_pressure_uses_reference_price_not_bait_floor():
 
     assert round(signal.price_change_pct, 1) == 1.0
     assert signal.pressure_score < 10
+
+
+def test_multi_snapshot_signal_rewards_persistent_tightening():
+    history = [
+        {
+            "item_id": 42, "started_at": "2026-09-27T10:00:00+00:00",
+            "best_price": 100, "reference_price": 100,
+            "total_quantity": 1000, "depth_5pct": 500, "reference_depth_5pct": 500,
+            "approx_market_value": 100000,
+        },
+        {
+            "item_id": 42, "started_at": "2026-09-27T11:00:00+00:00",
+            "best_price": 100, "reference_price": 100,
+            "total_quantity": 900, "depth_5pct": 420, "reference_depth_5pct": 420,
+            "approx_market_value": 90000,
+        },
+        {
+            "item_id": 42, "started_at": "2026-09-27T12:00:00+00:00",
+            "best_price": 105, "reference_price": 105,
+            "total_quantity": 800, "depth_5pct": 340, "reference_depth_5pct": 340,
+            "approx_market_value": 84000,
+        },
+        {
+            "item_id": 42, "started_at": "2026-09-27T13:00:00+00:00",
+            "best_price": 110, "reference_price": 110,
+            "total_quantity": 700, "depth_5pct": 260, "reference_depth_5pct": 260,
+            "approx_market_value": 77000,
+        },
+        {
+            "item_id": 42, "started_at": "2026-09-27T14:00:00+00:00",
+            "best_price": 120, "reference_price": 120,
+            "total_quantity": 600, "depth_5pct": 180, "reference_depth_5pct": 180,
+            "approx_market_value": 72000,
+        },
+    ]
+
+    signal = signal_from_history(history)
+
+    assert signal.tightening_intervals == 4
+    assert signal.interval_count == 4
+    assert signal.persistence_ratio == 1.0
+    assert signal.baseline_price_change_pct > 0
+    assert signal.baseline_quantity_change_pct < 0
+    assert signal.baseline_depth_5_change_pct < 0
