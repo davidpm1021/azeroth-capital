@@ -1,6 +1,7 @@
 import csv
 import re
 import sys
+import webbrowser
 from dataclasses import asdict
 from pathlib import Path
 
@@ -9,6 +10,8 @@ import typer
 from .blizzard import BlizzardClient
 from .collector import Collector
 from .config import Settings
+from .demo import create_demo
+from .report import build_report
 from .storage import Storage
 from .temporal import signal_from_pair
 
@@ -89,10 +92,20 @@ def collect(
         else:
             raise typer.BadParameter("target must be 'commodities' or 'realm'")
 
+    if result.not_modified:
+        typer.echo(
+            f"No new Blizzard snapshot for {result.source}. "
+            f"Last-Modified={result.source_modified_at or 'unknown'}"
+        )
+        return
+
+    digest = result.payload_hash[:12] if result.payload_hash else "-"
     typer.echo(
         f"Stored {result.source}: run={result.run_id}, auctions={result.auctions:,}, "
-        f"observations={result.observations:,}, hash={result.payload_hash[:12]}"
+        f"observations={result.observations:,}, hash={digest}"
     )
+    if result.source_modified_at:
+        typer.echo(f"Blizzard Last-Modified: {result.source_modified_at}")
 
 
 @app.command()
@@ -100,14 +113,16 @@ def status() -> None:
     """Show local collection status."""
     _, storage = services()
     info = storage.status()
-    typer.echo(f"Successful polls: {info['runs']:,}")
+    typer.echo(f"Successful snapshots: {info['runs']:,}")
     typer.echo(f"Unique raw snapshots: {info['raw_snapshots']:,}")
     typer.echo(f"Market observations: {info['observations']:,}")
     if info["latest"]:
+        published = info["latest"].get("source_modified_at") or "unknown"
         typer.echo(
-            f"Latest: {info['latest']['started_at']}  {info['latest']['source']}  "
+            f"Latest collection: {info['latest']['started_at']}  {info['latest']['source']}  "
             f"{info['latest']['payload_hash'][:12]}"
         )
+        typer.echo(f"Latest Blizzard snapshot: {published}")
 
 
 @app.command()
@@ -137,7 +152,7 @@ def analyze(
     settings, storage = services()
     pairs = storage.latest_market_pairs("commodity")
     if not pairs:
-        typer.echo("Need at least two successful commodity polls before temporal analysis is available.")
+        typer.echo("Need at least two distinct Blizzard commodity snapshots before temporal analysis is available.")
         raise typer.Exit(code=1)
 
     signals = [
@@ -198,6 +213,37 @@ def analyze(
                 writer.writeheader()
                 writer.writerows(rows)
             typer.echo(f"Saved latest signal report: {output}")
+
+
+@app.command()
+def report(
+    output: Path = typer.Option(Path("data/report.html"), "--output", "-o"),
+    top: int = typer.Option(50, "--top", min=1, max=500),
+    open_report: bool = typer.Option(False, "--open"),
+) -> None:
+    """Generate a local HTML market report from collected data."""
+    _, storage = services()
+    path = build_report(storage, output, top=top)
+    typer.echo(f"Report written: {path.resolve()}")
+    if open_report:
+        webbrowser.open(path.resolve().as_uri())
+
+
+@app.command()
+def demo(
+    root: Path = typer.Option(Path("data/demo"), "--root"),
+    open_report: bool = typer.Option(False, "--open"),
+) -> None:
+    """Run the complete analysis pipeline against synthetic snapshots, no credentials required."""
+    storage, path = create_demo(root, reset=True)
+    info = storage.status()
+    typer.echo(
+        f"Demo complete: {info['runs']} snapshots, "
+        f"{info['observations']} observations, {info['raw_snapshots']} raw payloads"
+    )
+    typer.echo(f"Demo report: {path.resolve()}")
+    if open_report:
+        webbrowser.open(path.resolve().as_uri())
 
 
 @app.command()
