@@ -27,9 +27,15 @@ def _pct_change(current: float, previous: float) -> float:
     return ((current - previous) / previous) * 100.0
 
 
+def _observed_at(row: dict) -> str:
+    return row.get("observed_at") or row.get("source_modified_at") or row["started_at"]
+
+
 def signal_from_pair(current: dict, previous: dict) -> MarketSignal:
-    current_at = datetime.fromisoformat(current["started_at"])
-    previous_at = datetime.fromisoformat(previous["started_at"])
+    current_stamp = _observed_at(current)
+    previous_stamp = _observed_at(previous)
+    current_at = datetime.fromisoformat(current_stamp)
+    previous_at = datetime.fromisoformat(previous_stamp)
     elapsed_hours = max((current_at - previous_at).total_seconds() / 3600.0, 1 / 3600)
 
     price_change = _pct_change(current["best_price"], previous["best_price"])
@@ -53,8 +59,8 @@ def signal_from_pair(current: dict, previous: dict) -> MarketSignal:
 
     return MarketSignal(
         item_id=int(current["item_id"]),
-        current_at=current["started_at"],
-        previous_at=previous["started_at"],
+        current_at=current_stamp,
+        previous_at=previous_stamp,
         best_price=int(current["best_price"]),
         total_quantity=int(current["total_quantity"]),
         depth_5pct=int(current["depth_5pct"]),
