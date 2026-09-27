@@ -13,7 +13,7 @@ from .config import Settings
 from .demo import create_demo
 from .report import build_report
 from .storage import Storage
-from .temporal import signal_from_pair
+from .temporal import signal_from_history
 
 app = typer.Typer(no_args_is_help=True, help="Azeroth Capital auction-market data collector.")
 
@@ -145,21 +145,23 @@ def realms() -> None:
 def analyze(
     top: int = typer.Option(25, "--top", min=1, max=200),
     min_quantity: int = typer.Option(100, "--min-quantity", min=0),
-    min_market_value_g: int = typer.Option(1000, "--min-market-value-g", min=0),
+    min_market_value_g: int = typer.Option(10_000, "--min-market-value-g", min=0),
+    history: int = typer.Option(5, "--history", min=2, max=24),
     names: bool = typer.Option(True, "--names/--no-names"),
     output: Path | None = typer.Option(Path("data/latest_signals.csv"), "--output"),
 ) -> None:
     """Rank the latest commodity changes by an explainable market-pressure heuristic."""
     settings, storage = services()
-    pairs = storage.latest_market_pairs("commodity")
-    if not pairs:
+    histories = storage.market_histories("commodity", snapshots=history)
+    usable = [rows for rows in histories.values() if len(rows) >= 2]
+    if not usable:
         typer.echo("Need at least two distinct Blizzard commodity snapshots before temporal analysis is available.")
         raise typer.Exit(code=1)
 
     signals = [
-        signal_from_pair(current, previous)
-        for current, previous in pairs
-        if int(current["total_quantity"]) >= min_quantity
+        signal_from_history(rows)
+        for rows in usable
+        if int(rows[-1]["total_quantity"]) >= min_quantity
     ]
     signals = [
         signal for signal in signals
@@ -184,22 +186,25 @@ def analyze(
                     item_names[signal.item_id] = f"Item {signal.item_id}"
 
     typer.echo(
-        "Rank  Item                        Ref Price           ΔRef      ΔQty      ΔNear5    ETA5h   Pressure"
+        "Rank  Item                        Ref Price       Δ1hRef   ΔBaseRef  ΔBaseQty  ΔBaseNear  Trend  Pressure"
     )
-    typer.echo("-" * 103)
+    typer.echo("-" * 112)
     for rank, signal in enumerate(selected, start=1):
         name = item_names.get(signal.item_id, f"Item {signal.item_id}")
         if len(name) > 28:
             name = name[:27] + "…"
-        eta = "-" if signal.depth_5_eta_hours is None else f"{signal.depth_5_eta_hours:5.1f}"
+        trend = f"{signal.tightening_intervals}/{signal.interval_count}"
         typer.echo(
             f"{rank:>4}  {name:<28}  {format_money(signal.reference_price):>16}  "
-            f"{signal.price_change_pct:>+7.1f}%  {signal.quantity_change_pct:>+7.1f}%  "
-            f"{signal.depth_5_change_pct:>+8.1f}%  {eta:>5}  {signal.pressure_score:>8.1f}"
+            f"{signal.price_change_pct:>+7.1f}%  {signal.baseline_price_change_pct:>+8.1f}%  "
+            f"{signal.baseline_quantity_change_pct:>+8.1f}%  "
+            f"{signal.baseline_depth_5_change_pct:>+9.1f}%  {trend:>5}  {signal.pressure_score:>8.1f}"
         )
 
     typer.echo("")
     typer.echo("Ref Price ignores tiny floor listings by pricing the first meaningful slice of inventory.")
+    typer.echo("Base compares the latest snapshot with the median of earlier snapshots in the selected history window.")
+    typer.echo("Trend is tightening intervals / observed intervals. Pressure rewards repeated tightening.")
     typer.echo("Pressure is an attention-ranking heuristic, not a buy/sell recommendation.")
     typer.echo("Depletion can reflect purchases, cancellations, expirations, or reposting.")
 
