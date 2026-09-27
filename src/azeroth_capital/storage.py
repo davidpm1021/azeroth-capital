@@ -11,6 +11,14 @@ from typing import Iterable
 SCHEMA = """
 PRAGMA journal_mode=WAL;
 
+CREATE TABLE IF NOT EXISTS raw_snapshot (
+    source TEXT NOT NULL,
+    payload_hash TEXT NOT NULL,
+    raw_path TEXT NOT NULL,
+    first_seen_at TEXT NOT NULL,
+    PRIMARY KEY (source, payload_hash)
+);
+
 CREATE TABLE IF NOT EXISTS collection_run (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     started_at TEXT NOT NULL,
@@ -20,8 +28,7 @@ CREATE TABLE IF NOT EXISTS collection_run (
     payload_hash TEXT NOT NULL,
     raw_path TEXT,
     success INTEGER NOT NULL DEFAULT 0,
-    error TEXT,
-    UNIQUE(source, payload_hash)
+    error TEXT
 );
 
 CREATE TABLE IF NOT EXISTS commodity_level (
@@ -63,6 +70,15 @@ CREATE TABLE IF NOT EXISTS market_observation (
     FOREIGN KEY (run_id) REFERENCES collection_run(id)
 );
 
+CREATE TABLE IF NOT EXISTS item_cache (
+    item_id INTEGER PRIMARY KEY,
+    name TEXT,
+    quality TEXT,
+    item_class TEXT,
+    item_subclass TEXT,
+    updated_at TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_commodity_item ON commodity_level(item_id);
 CREATE INDEX IF NOT EXISTS idx_observation_item ON market_observation(item_id, market_type);
 CREATE INDEX IF NOT EXISTS idx_run_source_time ON collection_run(source, started_at);
@@ -94,20 +110,34 @@ class Storage:
         with self.connect() as conn:
             conn.executescript(SCHEMA)
 
-    def has_payload(self, source: str, digest: str) -> bool:
+    def raw_path_for_hash(self, source: str, digest: str) -> Path | None:
         with self.connect() as conn:
             row = conn.execute(
-                "SELECT 1 FROM collection_run WHERE source=? AND payload_hash=? AND success=1",
+                "SELECT raw_path FROM raw_snapshot WHERE source=? AND payload_hash=?",
                 (source, digest),
             ).fetchone()
-            return row is not None
+        if not row:
+            return None
+        path = Path(row["raw_path"])
+        return path if path.exists() else None
 
     def save_raw(self, source: str, digest: str, payload: dict) -> Path:
+        existing = self.raw_path_for_hash(source, digest)
+        if existing:
+            return existing
+
         stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         safe = source.replace(":", "_").replace("/", "_")
         path = self.raw_dir / f"{stamp}_{safe}_{digest[:12]}.json.gz"
         with gzip.open(path, "wt", encoding="utf-8") as fh:
             json.dump(payload, fh, separators=(",", ":"))
+
+        with self.connect() as conn:
+            conn.execute(
+                """INSERT OR REPLACE INTO raw_snapshot(source,payload_hash,raw_path,first_seen_at)
+                   VALUES (?,?,?,?)""",
+                (source, digest, str(path), datetime.now(UTC).isoformat()),
+            )
         return path
 
     def begin_run(self, region: str, source: str, digest: str, raw_path: Path) -> int:
@@ -133,7 +163,13 @@ class Storage:
                 [(run_id, r["item_id"], r["unit_price"], r["quantity"]) for r in levels],
             )
 
-    def insert_observations(self, run_id: int, metrics: Iterable[dict], market_type: str, connected_realm_id: int = 0) -> None:
+    def insert_observations(
+        self,
+        run_id: int,
+        metrics: Iterable[dict],
+        market_type: str,
+        connected_realm_id: int = 0,
+    ) -> None:
         with self.connect() as conn:
             conn.executemany(
                 """INSERT INTO market_observation(
@@ -142,22 +178,41 @@ class Storage:
                 ) VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
                 [
                     (
-                        run_id, m["item_id"], market_type, connected_realm_id, m["best_price"],
-                        m["total_quantity"], m["quantity_at_best"], m["depth_1pct"],
-                        m["depth_5pct"], m["depth_10pct"], m["weighted_price"],
+                        run_id,
+                        m["item_id"],
+                        market_type,
+                        connected_realm_id,
+                        m["best_price"],
+                        m["total_quantity"],
+                        m["quantity_at_best"],
+                        m["depth_1pct"],
+                        m["depth_5pct"],
+                        m["depth_10pct"],
+                        m["weighted_price"],
                     )
                     for m in metrics
                 ],
             )
 
-    def insert_realm_auctions(self, run_id: int, connected_realm_id: int, auctions: Iterable[dict]) -> None:
+    def insert_realm_auctions(
+        self,
+        run_id: int,
+        connected_realm_id: int,
+        auctions: Iterable[dict],
+    ) -> None:
         rows = []
         for a in auctions:
             rows.append(
                 (
-                    run_id, connected_realm_id, int(a["id"]), int(a["item"]["id"]),
-                    int(a.get("quantity", 1)), a.get("buyout"), a.get("unit_price"),
-                    a.get("bid"), a.get("time_left"),
+                    run_id,
+                    connected_realm_id,
+                    int(a["id"]),
+                    int(a["item"]["id"]),
+                    int(a.get("quantity", 1)),
+                    a.get("buyout"),
+                    a.get("unit_price"),
+                    a.get("bid"),
+                    a.get("time_left"),
                 )
             )
         with self.connect() as conn:
@@ -170,12 +225,91 @@ class Storage:
 
     def status(self) -> dict:
         with self.connect() as conn:
-            runs = conn.execute("SELECT COUNT(*) AS n FROM collection_run WHERE success=1").fetchone()["n"]
+            runs = conn.execute(
+                "SELECT COUNT(*) AS n FROM collection_run WHERE success=1"
+            ).fetchone()["n"]
             latest = conn.execute(
-                "SELECT started_at,source FROM collection_run WHERE success=1 ORDER BY id DESC LIMIT 1"
+                """SELECT started_at,source,payload_hash
+                   FROM collection_run
+                   WHERE success=1
+                   ORDER BY id DESC LIMIT 1"""
             ).fetchone()
-            observations = conn.execute("SELECT COUNT(*) AS n FROM market_observation").fetchone()["n"]
-            return {"runs": runs, "observations": observations, "latest": dict(latest) if latest else None}
+            observations = conn.execute(
+                "SELECT COUNT(*) AS n FROM market_observation"
+            ).fetchone()["n"]
+            raw_snapshots = conn.execute(
+                "SELECT COUNT(*) AS n FROM raw_snapshot"
+            ).fetchone()["n"]
+            return {
+                "runs": runs,
+                "observations": observations,
+                "raw_snapshots": raw_snapshots,
+                "latest": dict(latest) if latest else None,
+            }
+
+    def latest_market_pairs(self, market_type: str = "commodity") -> list[tuple[dict, dict]]:
+        sql = """
+        WITH ranked AS (
+            SELECT
+                mo.*,
+                cr.started_at,
+                ROW_NUMBER() OVER (
+                    PARTITION BY mo.item_id, mo.connected_realm_id
+                    ORDER BY cr.started_at DESC, mo.run_id DESC
+                ) AS rn
+            FROM market_observation mo
+            JOIN collection_run cr ON cr.id = mo.run_id
+            WHERE cr.success=1 AND mo.market_type=?
+        )
+        SELECT * FROM ranked WHERE rn <= 2
+        ORDER BY item_id, connected_realm_id, rn
+        """
+        with self.connect() as conn:
+            rows = [dict(r) for r in conn.execute(sql, (market_type,)).fetchall()]
+
+        grouped: dict[tuple[int, int], dict[int, dict]] = {}
+        for row in rows:
+            key = (int(row["item_id"]), int(row["connected_realm_id"]))
+            grouped.setdefault(key, {})[int(row["rn"])] = row
+
+        pairs = []
+        for ranked in grouped.values():
+            if 1 in ranked and 2 in ranked:
+                pairs.append((ranked[1], ranked[2]))
+        return pairs
+
+    def get_item(self, item_id: int) -> dict | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM item_cache WHERE item_id=?",
+                (item_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def upsert_item(self, item_id: int, payload: dict) -> None:
+        quality = payload.get("quality") or {}
+        item_class = payload.get("item_class") or {}
+        item_subclass = payload.get("item_subclass") or {}
+        with self.connect() as conn:
+            conn.execute(
+                """INSERT INTO item_cache(
+                    item_id,name,quality,item_class,item_subclass,updated_at
+                ) VALUES (?,?,?,?,?,?)
+                ON CONFLICT(item_id) DO UPDATE SET
+                    name=excluded.name,
+                    quality=excluded.quality,
+                    item_class=excluded.item_class,
+                    item_subclass=excluded.item_subclass,
+                    updated_at=excluded.updated_at""",
+                (
+                    item_id,
+                    payload.get("name"),
+                    quality.get("name"),
+                    item_class.get("name"),
+                    item_subclass.get("name"),
+                    datetime.now(UTC).isoformat(),
+                ),
+            )
 
     def export_observations(self, output: Path, item_id: int | None = None) -> int:
         sql = """SELECT cr.started_at, mo.* FROM market_observation mo
