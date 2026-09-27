@@ -27,7 +27,7 @@ def build_report(storage: Storage, output: Path, top: int = 50) -> Path:
     signals = [
         signal for signal in signals
         if signal.total_quantity >= 100
-        and signal.approx_market_value >= 1000 * 10_000
+        and signal.approx_market_value >= 10_000 * 10_000
     ]
     signals.sort(key=lambda s: s.pressure_score, reverse=True)
     signals = signals[:top]
