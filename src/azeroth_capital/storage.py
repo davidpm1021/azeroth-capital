@@ -7,6 +7,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Iterable
 
+from .metrics import robust_market_fields
+
 
 SCHEMA = """
 PRAGMA journal_mode=WAL;
@@ -74,6 +76,10 @@ CREATE TABLE IF NOT EXISTS market_observation (
     depth_5pct INTEGER,
     depth_10pct INTEGER,
     weighted_price REAL,
+    reference_price INTEGER,
+    reference_quantity INTEGER,
+    reference_depth_5pct INTEGER,
+    approx_market_value INTEGER,
     PRIMARY KEY (run_id, item_id, market_type, connected_realm_id),
     FOREIGN KEY (run_id) REFERENCES collection_run(id)
 );
@@ -118,6 +124,7 @@ class Storage:
         with self.connect() as conn:
             conn.executescript(SCHEMA)
             self._migrate(conn)
+            self._backfill_reference_metrics(conn)
 
     @staticmethod
     def _migrate(conn: sqlite3.Connection) -> None:
@@ -127,6 +134,78 @@ class Storage:
         }
         if "source_modified_at" not in columns:
             conn.execute("ALTER TABLE collection_run ADD COLUMN source_modified_at TEXT")
+
+        observation_columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(market_observation)").fetchall()
+        }
+        additions = {
+            "reference_price": "INTEGER",
+            "reference_quantity": "INTEGER",
+            "reference_depth_5pct": "INTEGER",
+            "approx_market_value": "INTEGER",
+        }
+        for name, sql_type in additions.items():
+            if name not in observation_columns:
+                conn.execute(
+                    f"ALTER TABLE market_observation ADD COLUMN {name} {sql_type}"
+                )
+
+    @staticmethod
+    def _backfill_reference_metrics(conn: sqlite3.Connection) -> None:
+        missing = conn.execute(
+            """SELECT DISTINCT mo.run_id, mo.item_id
+               FROM market_observation mo
+               WHERE mo.market_type='commodity'
+                 AND mo.reference_price IS NULL"""
+        ).fetchall()
+        if not missing:
+            return
+
+        run_ids = sorted({int(row["run_id"]) for row in missing})
+        placeholders = ",".join("?" for _ in run_ids)
+        level_rows = conn.execute(
+            f"""SELECT run_id,item_id,unit_price,quantity
+                FROM commodity_level
+                WHERE run_id IN ({placeholders})
+                ORDER BY run_id,item_id,unit_price""",
+            tuple(run_ids),
+        ).fetchall()
+
+        grouped: dict[tuple[int, int], list[tuple[int, int]]] = {}
+        for row in level_rows:
+            key = (int(row["run_id"]), int(row["item_id"]))
+            grouped.setdefault(key, []).append(
+                (int(row["unit_price"]), int(row["quantity"]))
+            )
+
+        updates = []
+        for row in missing:
+            key = (int(row["run_id"]), int(row["item_id"]))
+            levels = grouped.get(key)
+            if not levels:
+                continue
+            robust = robust_market_fields(levels)
+            updates.append(
+                (
+                    robust["reference_price"],
+                    robust["reference_quantity"],
+                    robust["reference_depth_5pct"],
+                    robust["approx_market_value"],
+                    key[0],
+                    key[1],
+                )
+            )
+
+        conn.executemany(
+            """UPDATE market_observation
+               SET reference_price=?,
+                   reference_quantity=?,
+                   reference_depth_5pct=?,
+                   approx_market_value=?
+               WHERE run_id=? AND item_id=? AND market_type='commodity'""",
+            updates,
+        )
 
     def raw_path_for_hash(self, source: str, digest: str) -> Path | None:
         with self.connect() as conn:
@@ -236,8 +315,9 @@ class Storage:
             conn.executemany(
                 """INSERT INTO market_observation(
                     run_id,item_id,market_type,connected_realm_id,best_price,total_quantity,
-                    quantity_at_best,depth_1pct,depth_5pct,depth_10pct,weighted_price
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                    quantity_at_best,depth_1pct,depth_5pct,depth_10pct,weighted_price,
+                    reference_price,reference_quantity,reference_depth_5pct,approx_market_value
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 [
                     (
                         run_id,
@@ -251,6 +331,10 @@ class Storage:
                         m["depth_5pct"],
                         m["depth_10pct"],
                         m["weighted_price"],
+                        m.get("reference_price"),
+                        m.get("reference_quantity"),
+                        m.get("reference_depth_5pct"),
+                        m.get("approx_market_value"),
                     )
                     for m in metrics
                 ],
