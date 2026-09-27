@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from email.utils import parsedate_to_datetime
 from math import isfinite
 
 
@@ -31,11 +32,18 @@ def _observed_at(row: dict) -> str:
     return row.get("observed_at") or row.get("source_modified_at") or row["started_at"]
 
 
+def _parse_timestamp(value: str) -> datetime:
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return parsedate_to_datetime(value)
+
+
 def signal_from_pair(current: dict, previous: dict) -> MarketSignal:
     current_stamp = _observed_at(current)
     previous_stamp = _observed_at(previous)
-    current_at = datetime.fromisoformat(current_stamp)
-    previous_at = datetime.fromisoformat(previous_stamp)
+    current_at = _parse_timestamp(current_stamp)
+    previous_at = _parse_timestamp(previous_stamp)
     elapsed_hours = max((current_at - previous_at).total_seconds() / 3600.0, 1 / 3600)
 
     price_change = _pct_change(current["best_price"], previous["best_price"])
