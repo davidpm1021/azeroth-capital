@@ -5,7 +5,7 @@ from html import escape
 from pathlib import Path
 
 from .storage import Storage
-from .temporal import signal_from_pair
+from .temporal import signal_from_history
 
 
 def _money(copper: int | None) -> str:
@@ -18,8 +18,12 @@ def _money(copper: int | None) -> str:
 
 def build_report(storage: Storage, output: Path, top: int = 50) -> Path:
     status = storage.status()
-    pairs = storage.latest_market_pairs("commodity")
-    signals = [signal_from_pair(current, previous) for current, previous in pairs]
+    histories = storage.market_histories("commodity", snapshots=5)
+    signals = [
+        signal_from_history(history)
+        for history in histories.values()
+        if len(history) >= 2
+    ]
     signals = [
         signal for signal in signals
         if signal.total_quantity >= 100
@@ -49,16 +53,17 @@ def build_report(storage: Storage, output: Path, top: int = 50) -> Path:
 <td>{escape(str(row['name']))}<br><small>{row['item_id']}</small></td>
 <td>{escape(_money(row['reference_price']))}</td>
 <td>{row['price_change_pct']:+.1f}%</td>
-<td>{row['quantity_change_pct']:+.1f}%</td>
-<td>{row['depth_5_change_pct']:+.1f}%</td>
-<td>{'-' if row['depth_5_eta_hours'] is None else f"{row['depth_5_eta_hours']:.1f} h"}</td>
+<td>{row['baseline_price_change_pct']:+.1f}%</td>
+<td>{row['baseline_quantity_change_pct']:+.1f}%</td>
+<td>{row['baseline_depth_5_change_pct']:+.1f}%</td>
+<td>{row['tightening_intervals']}/{row['interval_count']}</td>
 <td>{row['pressure_score']:.1f}</td>
 </tr>"""
         for row in rows
     )
 
     if not body_rows:
-        body_rows = '<tr><td colspan="8">At least two distinct commodity snapshots are needed.</td></tr>'
+        body_rows = '<tr><td colspan="9">At least two distinct commodity snapshots are needed.</td></tr>'
 
     html = f"""<!doctype html>
 <html lang="en">
@@ -92,7 +97,7 @@ small {{ opacity: .65; }}
 <h2>Market pressure watch</h2>
 <table>
 <thead><tr>
-<th>#</th><th>Item</th><th>Reference price</th><th>Ref price Δ</th><th>Qty Δ</th><th>Near-market Δ</th><th>Near-market ETA</th><th>Pressure</th>
+<th>#</th><th>Item</th><th>Reference price</th><th>1h ref Δ</th><th>Baseline ref Δ</th><th>Baseline qty Δ</th><th>Baseline near Δ</th><th>Trend</th><th>Pressure</th>
 </tr></thead>
 <tbody>
 {body_rows}
@@ -100,6 +105,8 @@ small {{ opacity: .65; }}
 </table>
 <div class="note">
 <strong>Interpretation:</strong> Reference price ignores tiny floor listings by pricing the first meaningful slice of visible inventory.
+Baseline changes compare the newest snapshot with the median of prior snapshots in the recent window.
+Trend counts repeated intervals where reference price held or rose while near-market depth fell.
 Pressure is an explainable attention-ranking heuristic, not a buy or sell instruction.
 Observed depletion is not confirmed sales. Auctions can disappear because of purchases, cancellations, expirations, or reposting.
 </div>
