@@ -145,6 +145,7 @@ def realms() -> None:
 def analyze(
     top: int = typer.Option(25, "--top", min=1, max=200),
     min_quantity: int = typer.Option(100, "--min-quantity", min=0),
+    min_market_value_g: int = typer.Option(1000, "--min-market-value-g", min=0),
     names: bool = typer.Option(True, "--names/--no-names"),
     output: Path | None = typer.Option(Path("data/latest_signals.csv"), "--output"),
 ) -> None:
@@ -159,6 +160,10 @@ def analyze(
         signal_from_pair(current, previous)
         for current, previous in pairs
         if int(current["total_quantity"]) >= min_quantity
+    ]
+    signals = [
+        signal for signal in signals
+        if signal.approx_market_value >= min_market_value_g * 10_000
     ]
     signals.sort(key=lambda s: s.pressure_score, reverse=True)
     selected = signals[:top]
@@ -179,7 +184,7 @@ def analyze(
                     item_names[signal.item_id] = f"Item {signal.item_id}"
 
     typer.echo(
-        "Rank  Item                          Price             ΔPrice    ΔQty      ΔDepth5   ETA5h   Pressure"
+        "Rank  Item                        Ref Price           ΔRef      ΔQty      ΔNear5    ETA5h   Pressure"
     )
     typer.echo("-" * 103)
     for rank, signal in enumerate(selected, start=1):
@@ -188,12 +193,13 @@ def analyze(
             name = name[:27] + "…"
         eta = "-" if signal.depth_5_eta_hours is None else f"{signal.depth_5_eta_hours:5.1f}"
         typer.echo(
-            f"{rank:>4}  {name:<28}  {format_money(signal.best_price):>16}  "
+            f"{rank:>4}  {name:<28}  {format_money(signal.reference_price):>16}  "
             f"{signal.price_change_pct:>+7.1f}%  {signal.quantity_change_pct:>+7.1f}%  "
             f"{signal.depth_5_change_pct:>+8.1f}%  {eta:>5}  {signal.pressure_score:>8.1f}"
         )
 
     typer.echo("")
+    typer.echo("Ref Price ignores tiny floor listings by pricing the first meaningful slice of inventory.")
     typer.echo("Pressure is an attention-ranking heuristic, not a buy/sell recommendation.")
     typer.echo("Depletion can reflect purchases, cancellations, expirations, or reposting.")
 
