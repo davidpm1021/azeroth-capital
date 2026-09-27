@@ -1,31 +1,37 @@
-# Azeroth Capital v0.1 Setup
+# Azeroth Capital MVP Setup
 
 ## 1. Requirements
 
 - Windows 10/11
-- Python 3.12+
+- Python 3.12 or newer
 - Git
 - A Blizzard Battle.net developer application with a client ID and client secret
 
-Create Blizzard developer credentials at the Battle.net Developer Portal. Azeroth Capital uses the OAuth client-credentials flow and sends the resulting bearer token only to Blizzard API endpoints.
+Azeroth Capital uses Blizzard's OAuth client-credentials flow. The credentials identify this application to Blizzard. They are not your Battle.net login.
 
-## 2. Clone
+## 2. Clone and switch to development
 
 ```powershell
 cd C:\Users\david
 git clone https://github.com/davidpm1021/azeroth-capital.git
-cd azeroth-capital
+cd C:\Users\david\azeroth-capital
 git switch development
+git pull origin development
 ```
 
-## 3. Create a virtual environment
+If the repo already exists, skip the clone line.
+
+## 3. Create the virtual environment
+
+Your PC currently has Python 3.14, so these commands avoid relying on `pip` being on PATH:
 
 ```powershell
-py -3.12 -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-pip install -e ".[dev]"
+py -3.14 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install --upgrade pip
+.\.venv\Scripts\python.exe -m pip install -e ".[dev]"
 ```
+
+Activation is optional. Every command below can use the executable directly.
 
 ## 4. Configure credentials
 
@@ -48,67 +54,104 @@ AC_TIMEOUT_SECONDS=60
 
 Never commit `.env`.
 
-## 5. Initialize
+## 5. Validate setup
 
 ```powershell
-ac init
+.\.venv\Scripts\ac.exe init
+.\.venv\Scripts\ac.exe doctor
+.\.venv\Scripts\ac.exe doctor --live
 ```
 
-## 6. Test a commodity collection
+The live doctor check confirms that OAuth and Blizzard Game Data API access work.
+
+## 6. Start collecting
 
 ```powershell
-ac collect commodities
-ac status
+.\.venv\Scripts\ac.exe collect commodities
+.\.venv\Scripts\ac.exe status
 ```
 
-Commodity auction data is region-wide.
+Wait for Blizzard to publish another snapshot, then collect again. Temporal analysis requires at least two successful polls.
 
-## 7. Inspect connected realms
+## 7. Analyze market pressure
 
 ```powershell
-ac realms
+.\.venv\Scripts\ac.exe analyze
 ```
 
-Then collect a specific connected-realm auction house:
+The current MVP ranks commodities using an explainable pressure heuristic based on:
+
+- best-price movement
+- total listed-quantity movement
+- depth within 5% of best price
+- observed inventory depletion per hour
+- estimated time to consume the currently visible 5% depth at the last observed depletion rate
+
+This is an attention-ranking model, not a buy/sell recommendation. Auction disappearance can be caused by purchases, cancellations, expiration, or reposting.
+
+A CSV copy is written to:
+
+```text
+data\latest_signals.csv
+```
+
+## 8. Install hourly unattended collection
+
+First verify that manual collection works. Then run:
 
 ```powershell
-ac collect realm --realm 60
+powershell -ExecutionPolicy Bypass -File .\scripts\install-hourly-task.ps1
 ```
 
-Use a connected-realm ID returned by Blizzard. Do not assume a normal realm ID is interchangeable with a connected-realm ID.
+This installs the Windows scheduled task:
 
-## 8. Export observations
+```text
+AzerothCapital-HourlyCollector
+```
+
+It starts about two minutes after installation and repeats hourly. Logs are written to:
+
+```text
+data\logs\collector.log
+```
+
+To remove it:
 
 ```powershell
-ac export
-ac export --item 123456 --output data\item_123456.csv
+powershell -ExecutionPolicy Bypass -File .\scripts\remove-hourly-task.ps1
 ```
 
-## 9. Run tests
+## 9. Connected-realm auctions
+
+List Blizzard connected-realm IDs:
 
 ```powershell
-pytest
+.\.venv\Scripts\ac.exe realms
 ```
 
-## Data model
+Collect one:
 
-Every successful collection keeps:
+```powershell
+.\.venv\Scripts\ac.exe collect realm --realm 60
+```
 
-1. A compressed raw Blizzard response in `data/raw/`
-2. A SHA-256 content hash for deduplication
-3. Normalized SQLite rows in `data/azeroth_capital.db`
-4. Derived commodity snapshot observations
+Non-commodity realm data is retained in v0.1 but is not yet part of the market-pressure ranking because item variants can make naive item-ID aggregation misleading.
 
-Commodity observations currently include:
+## 10. Export history
 
-- best price
-- quantity at best price
-- total listed quantity
-- depth within 1%, 5%, and 10% of best price
-- quantity-weighted average listed price
+```powershell
+.\.venv\Scripts\ac.exe export
+.\.venv\Scripts\ac.exe export --item 123456 --output data\item_123456.csv
+```
 
-Prices are stored in Blizzard's integer currency units rather than floating point.
+## 11. Tests
 
-## Current scope
+```powershell
+.\.venv\Scripts\python.exe -m pytest -q
+```
 
-v0.1 is deliberately a collector, not a trading bot or forecasting engine. It does not automate any in-game action.
+## Data behavior
+
+Each poll is retained as a time-series observation even if Blizzard returns the same auction payload as the previous poll. Identical raw payloads share a single compressed blob to avoid unnecessary disk growth.
+
+Prices are stored as Blizzard integer currency values rather than floating point.
