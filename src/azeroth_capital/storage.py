@@ -393,7 +393,12 @@ class Storage:
                 "latest": dict(latest) if latest else None,
             }
 
-    def latest_market_pairs(self, market_type: str = "commodity") -> list[tuple[dict, dict]]:
+    def market_histories(
+        self,
+        market_type: str = "commodity",
+        snapshots: int = 5,
+    ) -> dict[tuple[int, int], list[dict]]:
+        """Return up to N distinct Blizzard snapshots per market, oldest to newest."""
         sql = """
         WITH unique_runs AS (
             SELECT
@@ -419,21 +424,27 @@ class Storage:
             JOIN unique_runs ur ON ur.id = mo.run_id
             WHERE ur.payload_rank=1 AND mo.market_type=?
         )
-        SELECT * FROM ranked WHERE rn <= 2
-        ORDER BY item_id, connected_realm_id, rn
+        SELECT * FROM ranked WHERE rn <= ?
+        ORDER BY item_id, connected_realm_id, rn DESC
         """
         with self.connect() as conn:
-            rows = [dict(r) for r in conn.execute(sql, (market_type,)).fetchall()]
+            rows = [
+                dict(r)
+                for r in conn.execute(sql, (market_type, snapshots)).fetchall()
+            ]
 
-        grouped: dict[tuple[int, int], dict[int, dict]] = {}
+        grouped: dict[tuple[int, int], list[dict]] = {}
         for row in rows:
             key = (int(row["item_id"]), int(row["connected_realm_id"]))
-            grouped.setdefault(key, {})[int(row["rn"])] = row
+            grouped.setdefault(key, []).append(row)
+        return grouped
 
+    def latest_market_pairs(self, market_type: str = "commodity") -> list[tuple[dict, dict]]:
+        histories = self.market_histories(market_type, snapshots=2)
         pairs = []
-        for ranked in grouped.values():
-            if 1 in ranked and 2 in ranked:
-                pairs.append((ranked[1], ranked[2]))
+        for history in histories.values():
+            if len(history) >= 2:
+                pairs.append((history[-1], history[-2]))
         return pairs
 
     def get_item(self, item_id: int) -> dict | None:
