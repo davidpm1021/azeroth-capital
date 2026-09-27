@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 
-from .blizzard import BlizzardClient
+from .blizzard import ApiDocument, BlizzardClient
 from .metrics import commodity_levels, snapshot_metrics
 from .storage import Storage, payload_hash
 
@@ -8,10 +8,12 @@ from .storage import Storage, payload_hash
 @dataclass
 class CollectionResult:
     source: str
-    run_id: int
+    run_id: int | None
     auctions: int
     observations: int
-    payload_hash: str
+    payload_hash: str | None
+    not_modified: bool = False
+    source_modified_at: str | None = None
 
 
 class Collector:
@@ -20,16 +22,49 @@ class Collector:
         self.storage = storage
         self.region = region
 
-    def _prepare(self, source: str, payload: dict) -> tuple[str, int]:
+    def _prepare(
+        self,
+        source: str,
+        payload: dict,
+        source_modified_at: str | None,
+    ) -> tuple[str, int]:
         digest = payload_hash(payload)
         raw_path = self.storage.save_raw(source, digest, payload)
-        run_id = self.storage.begin_run(self.region, source, digest, raw_path)
+        run_id = self.storage.begin_run(
+            self.region,
+            source,
+            digest,
+            raw_path,
+            source_modified_at=source_modified_at,
+        )
         return digest, run_id
+
+    @staticmethod
+    def _coerce_document(value: ApiDocument | dict) -> ApiDocument:
+        if isinstance(value, ApiDocument):
+            return value
+        return ApiDocument(data=value, last_modified=None, not_modified=False)
 
     def commodities(self) -> CollectionResult:
         source = "commodities"
-        payload = self.client.commodities()
-        digest, run_id = self._prepare(source, payload)
+        last_modified = self.storage.last_modified_for_source(source)
+        document = self._coerce_document(
+            self.client.commodities(if_modified_since=last_modified)
+        )
+
+        if document.not_modified:
+            return CollectionResult(
+                source=source,
+                run_id=None,
+                auctions=0,
+                observations=0,
+                payload_hash=None,
+                not_modified=True,
+                source_modified_at=document.last_modified,
+            )
+
+        payload = document.data or {}
+        digest, run_id = self._prepare(source, payload, document.last_modified)
 
         try:
             levels = commodity_levels(payload.get("auctions", []))
@@ -43,6 +78,7 @@ class Collector:
                 auctions=len(payload.get("auctions", [])),
                 observations=len(metrics),
                 payload_hash=digest,
+                source_modified_at=document.last_modified,
             )
         except Exception as exc:
             self.storage.finish_run(run_id, str(exc))
@@ -50,8 +86,27 @@ class Collector:
 
     def realm(self, connected_realm_id: int) -> CollectionResult:
         source = f"realm:{connected_realm_id}"
-        payload = self.client.realm_auctions(connected_realm_id)
-        digest, run_id = self._prepare(source, payload)
+        last_modified = self.storage.last_modified_for_source(source)
+        document = self._coerce_document(
+            self.client.realm_auctions(
+                connected_realm_id,
+                if_modified_since=last_modified,
+            )
+        )
+
+        if document.not_modified:
+            return CollectionResult(
+                source=source,
+                run_id=None,
+                auctions=0,
+                observations=0,
+                payload_hash=None,
+                not_modified=True,
+                source_modified_at=document.last_modified,
+            )
+
+        payload = document.data or {}
+        digest, run_id = self._prepare(source, payload, document.last_modified)
 
         try:
             auctions = payload.get("auctions", [])
@@ -63,6 +118,7 @@ class Collector:
                 auctions=len(auctions),
                 observations=0,
                 payload_hash=digest,
+                source_modified_at=document.last_modified,
             )
         except Exception as exc:
             self.storage.finish_run(run_id, str(exc))

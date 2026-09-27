@@ -5,7 +5,7 @@
 - Windows 10/11
 - Python 3.12 or newer
 - Git
-- A Blizzard Battle.net developer application with a client ID and client secret
+- A Blizzard Battle.net developer application with a client ID and client secret for live collection
 
 Azeroth Capital uses Blizzard's OAuth client-credentials flow. The credentials identify this application to Blizzard. They are not your Battle.net login.
 
@@ -33,7 +33,21 @@ py -3.14 -m venv .venv
 
 Activation is optional. Every command below can use the executable directly.
 
-## 4. Configure credentials
+## 4. Run the offline MVP demo
+
+This exercises ingestion, normalization, time-series comparison, pressure analysis, and HTML reporting without Blizzard credentials:
+
+```powershell
+.\.venv\Scripts\ac.exe demo --open
+```
+
+The demo writes its isolated data under:
+
+```text
+data\demo\
+```
+
+## 5. Configure credentials for live collection
 
 ```powershell
 Copy-Item .env.example .env
@@ -54,7 +68,7 @@ AC_TIMEOUT_SECONDS=60
 
 Never commit `.env`.
 
-## 5. Validate setup
+## 6. Validate live setup
 
 ```powershell
 .\.venv\Scripts\ac.exe init
@@ -64,28 +78,30 @@ Never commit `.env`.
 
 The live doctor check confirms that OAuth and Blizzard Game Data API access work.
 
-## 6. Start collecting
+## 7. Start collecting
 
 ```powershell
 .\.venv\Scripts\ac.exe collect commodities
 .\.venv\Scripts\ac.exe status
 ```
 
-Wait for Blizzard to publish another snapshot, then collect again. Temporal analysis requires at least two successful polls.
+Azeroth Capital stores Blizzard's `Last-Modified` value with each snapshot and sends it back with `If-Modified-Since` on the next request. If Blizzard has not published a new auction snapshot, the collector records no duplicate market observation.
 
-## 7. Analyze market pressure
+Temporal analysis requires at least two distinct Blizzard snapshots.
+
+## 8. Analyze market pressure
 
 ```powershell
 .\.venv\Scripts\ac.exe analyze
 ```
 
-The current MVP ranks commodities using an explainable pressure heuristic based on:
+The MVP ranks commodities using an explainable pressure heuristic based on:
 
 - best-price movement
 - total listed-quantity movement
 - depth within 5% of best price
 - observed inventory depletion per hour
-- estimated time to consume the currently visible 5% depth at the last observed depletion rate
+- estimated time to exhaust the currently visible 5% depth at the last observed depletion rate
 
 This is an attention-ranking model, not a buy/sell recommendation. Auction disappearance can be caused by purchases, cancellations, expiration, or reposting.
 
@@ -95,7 +111,19 @@ A CSV copy is written to:
 data\latest_signals.csv
 ```
 
-## 8. Install hourly unattended collection
+## 9. Generate the local report
+
+```powershell
+.\.venv\Scripts\ac.exe report --open
+```
+
+The default report is:
+
+```text
+data\report.html
+```
+
+## 10. Install hourly unattended collection
 
 First verify that manual collection works. Then run:
 
@@ -121,7 +149,7 @@ To remove it:
 powershell -ExecutionPolicy Bypass -File .\scripts\remove-hourly-task.ps1
 ```
 
-## 9. Connected-realm auctions
+## 11. Connected-realm auctions
 
 List Blizzard connected-realm IDs:
 
@@ -135,16 +163,16 @@ Collect one:
 .\.venv\Scripts\ac.exe collect realm --realm 60
 ```
 
-Non-commodity realm data is retained in v0.1 but is not yet part of the market-pressure ranking because item variants can make naive item-ID aggregation misleading.
+Non-commodity realm data is retained but is not yet part of the pressure ranking because item variants can make naive item-ID aggregation misleading.
 
-## 10. Export history
+## 12. Export history
 
 ```powershell
 .\.venv\Scripts\ac.exe export
 .\.venv\Scripts\ac.exe export --item 123456 --output data\item_123456.csv
 ```
 
-## 11. Tests
+## 13. Tests
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest -q
@@ -152,6 +180,6 @@ Non-commodity realm data is retained in v0.1 but is not yet part of the market-p
 
 ## Data behavior
 
-Each poll is retained as a time-series observation even if Blizzard returns the same auction payload as the previous poll. Identical raw payloads share a single compressed blob to avoid unnecessary disk growth.
+Only distinct Blizzard-published snapshots become market observations. Raw payloads are compressed and content-addressed by SHA-256 so identical payloads are not duplicated on disk.
 
-Prices are stored as Blizzard integer currency values rather than floating point.
+Blizzard publication time is preserved separately from local collection time. Prices are stored as Blizzard integer currency values rather than floating point.
