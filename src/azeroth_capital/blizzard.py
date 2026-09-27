@@ -1,14 +1,25 @@
 import httpx
-from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
+from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 from .auth import BlizzardAuth
 from .config import Settings
 
 
+def _retryable(exc: BaseException) -> bool:
+    if isinstance(exc, (httpx.TimeoutException, httpx.NetworkError)):
+        return True
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code == 429 or exc.response.status_code >= 500
+    return False
+
+
 class BlizzardClient:
     def __init__(self, settings: Settings):
         self.settings = settings
-        self.http = httpx.Client(timeout=settings.ac_timeout_seconds)
+        self.http = httpx.Client(
+            timeout=settings.ac_timeout_seconds,
+            headers={"User-Agent": "AzerothCapital/0.1"},
+        )
         self.auth = BlizzardAuth(settings, self.http)
 
     def close(self) -> None:
@@ -21,7 +32,7 @@ class BlizzardClient:
         self.close()
 
     @retry(
-        retry=retry_if_exception_type((httpx.TimeoutException, httpx.NetworkError)),
+        retry=retry_if_exception(_retryable),
         wait=wait_exponential(multiplier=1, min=1, max=20),
         stop=stop_after_attempt(4),
         reraise=True,
