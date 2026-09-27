@@ -26,3 +26,17 @@ def test_snapshot_depth_metrics():
     assert metric["depth_1pct"] == 5
     assert metric["depth_5pct"] == 15
     assert metric["depth_10pct"] == 15
+
+
+def test_reference_price_ignores_tiny_floor_listing():
+    levels = [
+        {"item_id": 42, "unit_price": 1, "quantity": 1},
+        {"item_id": 42, "unit_price": 10_000, "quantity": 49},
+        {"item_id": 42, "unit_price": 10_500, "quantity": 50},
+    ]
+    metric = snapshot_metrics(levels)[0]
+
+    assert metric["best_price"] == 1
+    assert metric["reference_price"] == 10_000
+    assert metric["reference_quantity"] == 20
+    assert metric["reference_depth_5pct"] == 100
