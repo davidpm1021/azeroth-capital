@@ -8,8 +8,8 @@ def test_commodity_levels_aggregate_same_price():
         {"item": {"id": 42}, "unit_price": 110, "quantity": 5},
     ]
     assert commodity_levels(auctions) == [
-        {"item_id": 42, "unit_price": 100, "quantity": 5},
-        {"item_id": 42, "unit_price": 110, "quantity": 5},
+        {"item_id": 42, "unit_price": 100, "quantity": 5, "listing_count": 2},
+        {"item_id": 42, "unit_price": 110, "quantity": 5, "listing_count": 1},
     ]
 
 
@@ -26,6 +26,8 @@ def test_snapshot_depth_metrics():
     assert metric["depth_1pct"] == 5
     assert metric["depth_5pct"] == 15
     assert metric["depth_10pct"] == 15
+    assert metric["listing_count"] == 3
+    assert metric["price_level_count"] == 3
 
 
 def test_reference_price_ignores_tiny_floor_listing():
