@@ -8,6 +8,7 @@ from pathlib import Path
 import typer
 
 from .blizzard import BlizzardClient
+from .catalog import sync_expansion_catalog
 from .collector import Collector
 from .config import Settings
 from .demo import create_demo
@@ -141,6 +142,33 @@ def realms() -> None:
             typer.echo(href)
 
 
+@app.command("catalog-sync")
+def catalog_sync(
+    expansion: str = typer.Option("Midnight", "--expansion"),
+) -> None:
+    """Build an expansion item universe from Blizzard profession recipes."""
+    settings, storage = services()
+    typer.echo(f"Building {expansion} profession catalog from Blizzard...")
+    with BlizzardClient(settings) as client:
+        result = sync_expansion_catalog(client, storage, expansion)
+    typer.echo(
+        f"Catalog ready: {result.items:,} items from {result.recipes:,} recipes, "
+        f"{result.skill_tiers:,} skill tiers, {result.professions:,} professions."
+    )
+
+
+@app.command("catalog-status")
+def catalog_status(
+    expansion: str = typer.Option("Midnight", "--expansion"),
+) -> None:
+    """Show local expansion-catalog status."""
+    _, storage = services()
+    info = storage.expansion_catalog_status(expansion)
+    typer.echo(f"Expansion: {info['expansion']}")
+    typer.echo(f"Catalog items: {info['items']:,}")
+    typer.echo(f"Updated: {info['updated_at'] or 'not synced'}")
+
+
 @app.command()
 def analyze(
     top: int = typer.Option(25, "--top", min=1, max=200),
@@ -149,6 +177,7 @@ def analyze(
     min_listings: int = typer.Option(50, "--min-listings", min=0),
     min_price_levels: int = typer.Option(5, "--min-price-levels", min=0),
     mode: str = typer.Option("liquid", "--mode", help="liquid, thin, or all"),
+    expansion: str = typer.Option("Midnight", "--expansion", help="Expansion catalog name, or 'all'"),
     history: int = typer.Option(5, "--history", min=2, max=24),
     names: bool = typer.Option(True, "--names/--no-names"),
     output: Path | None = typer.Option(Path("data/latest_signals.csv"), "--output"),
@@ -170,6 +199,15 @@ def analyze(
         signal for signal in signals
         if signal.approx_market_value >= min_market_value_g * 10_000
     ]
+
+    if expansion.casefold() != "all":
+        expansion_ids = storage.expansion_item_ids(expansion)
+        if not expansion_ids:
+            typer.echo(
+                f"No {expansion} catalog is loaded. Run: ac catalog-sync --expansion {expansion}"
+            )
+            raise typer.Exit(code=1)
+        signals = [signal for signal in signals if signal.item_id in expansion_ids]
 
     if mode == "liquid":
         signals = [
@@ -224,6 +262,7 @@ def analyze(
     typer.echo("Ref Price ignores tiny floor listings by pricing the first meaningful slice of inventory.")
     typer.echo("Base compares the latest snapshot with the median of earlier snapshots in the selected history window.")
     typer.echo("Trend is tightening intervals / observed intervals. Breadth is listings / distinct price levels.")
+    typer.echo(f"Expansion filter: {expansion}. Use --expansion all to include legacy markets.")
     typer.echo("Default liquid mode requires at least 50 listings and 5 price levels; use --mode thin or --mode all to inspect the rest.")
     typer.echo("Pressure rewards repeated tightening.")
     typer.echo("Pressure is an attention-ranking heuristic, not a buy/sell recommendation.")
