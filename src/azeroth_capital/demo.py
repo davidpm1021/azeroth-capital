@@ -87,5 +87,11 @@ def create_demo(root: Path, reset: bool = True) -> tuple[Storage, Path]:
         },
     )
 
-    report_path = build_report(storage, root / "report.html")
+    report_path = build_report(
+        storage,
+        root / "report.html",
+        min_market_value_g=0,
+        min_listings=0,
+        min_price_levels=0,
+    )
     return storage, report_path
