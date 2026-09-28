@@ -109,3 +109,21 @@ class BlizzardClient:
 
     def item(self, item_id: int) -> dict:
         return self._get(f"/data/wow/item/{item_id}", self.settings.static_namespace)
+
+    def profession_index(self) -> dict:
+        return self._get("/data/wow/profession/index", self.settings.static_namespace)
+
+    def profession(self, profession_id: int) -> dict:
+        return self._get(
+            f"/data/wow/profession/{profession_id}",
+            self.settings.static_namespace,
+        )
+
+    def profession_skill_tier(self, profession_id: int, skill_tier_id: int) -> dict:
+        return self._get(
+            f"/data/wow/profession/{profession_id}/skill-tier/{skill_tier_id}",
+            self.settings.static_namespace,
+        )
+
+    def recipe(self, recipe_id: int) -> dict:
+        return self._get(f"/data/wow/recipe/{recipe_id}", self.settings.static_namespace)
