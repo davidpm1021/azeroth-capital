@@ -96,6 +96,14 @@ CREATE TABLE IF NOT EXISTS item_cache (
     updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS expansion_item (
+    expansion TEXT NOT NULL,
+    item_id INTEGER NOT NULL,
+    roles TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (expansion, item_id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_commodity_item ON commodity_level(item_id);
 CREATE INDEX IF NOT EXISTS idx_observation_item ON market_observation(item_id, market_type);
 CREATE INDEX IF NOT EXISTS idx_run_source_time ON collection_run(source, started_at);
@@ -540,6 +548,54 @@ class Storage:
             if len(history) >= 2:
                 pairs.append((history[-1], history[-2]))
         return pairs
+
+    def replace_expansion_catalog(
+        self,
+        expansion: str,
+        item_roles: dict[int, set[str]],
+    ) -> None:
+        now = datetime.now(UTC).isoformat()
+        with self.connect() as conn:
+            conn.execute(
+                "DELETE FROM expansion_item WHERE lower(expansion)=lower(?)",
+                (expansion,),
+            )
+            conn.executemany(
+                """INSERT INTO expansion_item(expansion,item_id,roles,updated_at)
+                   VALUES (?,?,?,?)""",
+                [
+                    (
+                        expansion,
+                        int(item_id),
+                        ",".join(sorted(roles)),
+                        now,
+                    )
+                    for item_id, roles in sorted(item_roles.items())
+                ],
+            )
+
+    def expansion_item_ids(self, expansion: str) -> set[int]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """SELECT item_id FROM expansion_item
+                   WHERE lower(expansion)=lower(?)""",
+                (expansion,),
+            ).fetchall()
+        return {int(row["item_id"]) for row in rows}
+
+    def expansion_catalog_status(self, expansion: str) -> dict:
+        with self.connect() as conn:
+            row = conn.execute(
+                """SELECT COUNT(*) AS n, MAX(updated_at) AS updated_at
+                   FROM expansion_item
+                   WHERE lower(expansion)=lower(?)""",
+                (expansion,),
+            ).fetchone()
+        return {
+            "expansion": expansion,
+            "items": int(row["n"]) if row else 0,
+            "updated_at": row["updated_at"] if row else None,
+        }
 
     def get_item(self, item_id: int) -> dict | None:
         with self.connect() as conn:
