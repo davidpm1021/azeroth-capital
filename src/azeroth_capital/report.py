@@ -28,6 +28,8 @@ def build_report(storage: Storage, output: Path, top: int = 50) -> Path:
         signal for signal in signals
         if signal.total_quantity >= 100
         and signal.approx_market_value >= 10_000 * 10_000
+        and signal.listing_count >= 50
+        and signal.price_level_count >= 5
     ]
     signals.sort(key=lambda s: s.pressure_score, reverse=True)
     signals = signals[:top]
@@ -57,13 +59,14 @@ def build_report(storage: Storage, output: Path, top: int = 50) -> Path:
 <td>{row['baseline_quantity_change_pct']:+.1f}%</td>
 <td>{row['baseline_depth_5_change_pct']:+.1f}%</td>
 <td>{row['tightening_intervals']}/{row['interval_count']}</td>
+<td>{row['listing_count']}/{row['price_level_count']}</td>
 <td>{row['pressure_score']:.1f}</td>
 </tr>"""
         for row in rows
     )
 
     if not body_rows:
-        body_rows = '<tr><td colspan="9">At least two distinct commodity snapshots are needed.</td></tr>'
+        body_rows = '<tr><td colspan="10">At least two distinct commodity snapshots are needed.</td></tr>'
 
     html = f"""<!doctype html>
 <html lang="en">
@@ -97,7 +100,7 @@ small {{ opacity: .65; }}
 <h2>Market pressure watch</h2>
 <table>
 <thead><tr>
-<th>#</th><th>Item</th><th>Reference price</th><th>1h ref Δ</th><th>Baseline ref Δ</th><th>Baseline qty Δ</th><th>Baseline near Δ</th><th>Trend</th><th>Pressure</th>
+<th>#</th><th>Item</th><th>Reference price</th><th>1h ref Δ</th><th>Baseline ref Δ</th><th>Baseline qty Δ</th><th>Baseline near Δ</th><th>Trend</th><th>Breadth</th><th>Pressure</th>
 </tr></thead>
 <tbody>
 {body_rows}
@@ -107,6 +110,7 @@ small {{ opacity: .65; }}
 <strong>Interpretation:</strong> Reference price ignores tiny floor listings by pricing the first meaningful slice of visible inventory.
 Baseline changes compare the newest snapshot with the median of prior snapshots in the recent window.
 Trend counts repeated intervals where reference price held or rose while near-market depth fell.
+Breadth is current auction listings / distinct price levels. The default report requires at least 50 listings and 5 price levels.
 Pressure is an explainable attention-ranking heuristic, not a buy or sell instruction.
 Observed depletion is not confirmed sales. Auctions can disappear because of purchases, cancellations, expirations, or reposting.
 </div>
