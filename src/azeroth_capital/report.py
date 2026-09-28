@@ -23,6 +23,7 @@ def build_report(
     min_market_value_g: int = 10_000,
     min_listings: int = 50,
     min_price_levels: int = 5,
+    expansion: str | None = "Midnight",
 ) -> Path:
     status = storage.status()
     histories = storage.market_histories("commodity", snapshots=5)
@@ -38,6 +39,10 @@ def build_report(
         and signal.listing_count >= min_listings
         and signal.price_level_count >= min_price_levels
     ]
+    if expansion and expansion.casefold() != "all":
+        expansion_ids = storage.expansion_item_ids(expansion)
+        if expansion_ids:
+            signals = [signal for signal in signals if signal.item_id in expansion_ids]
     signals.sort(key=lambda s: s.pressure_score, reverse=True)
     signals = signals[:top]
 
@@ -97,7 +102,7 @@ small {{ opacity: .65; }}
 </head>
 <body>
 <h1>Azeroth Capital</h1>
-<div class="subtle">Market research dashboard</div>
+<div class="subtle">Market research dashboard{'' if not expansion else f' · {escape(expansion)}'}</div>
 <div class="cards">
   <div class="card"><div class="subtle">Distinct raw snapshots</div><div class="value">{status['raw_snapshots']:,}</div></div>
   <div class="card"><div class="subtle">Successful collections</div><div class="value">{status['runs']:,}</div></div>
