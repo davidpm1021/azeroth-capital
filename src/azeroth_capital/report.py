@@ -16,7 +16,14 @@ def _money(copper: int | None) -> str:
     return f"{gold:,}g {silver:02d}s {copper_value:02d}c"
 
 
-def build_report(storage: Storage, output: Path, top: int = 50) -> Path:
+def build_report(
+    storage: Storage,
+    output: Path,
+    top: int = 50,
+    min_market_value_g: int = 10_000,
+    min_listings: int = 50,
+    min_price_levels: int = 5,
+) -> Path:
     status = storage.status()
     histories = storage.market_histories("commodity", snapshots=5)
     signals = [
@@ -27,9 +34,9 @@ def build_report(storage: Storage, output: Path, top: int = 50) -> Path:
     signals = [
         signal for signal in signals
         if signal.total_quantity >= 100
-        and signal.approx_market_value >= 10_000 * 10_000
-        and signal.listing_count >= 50
-        and signal.price_level_count >= 5
+        and signal.approx_market_value >= min_market_value_g * 10_000
+        and signal.listing_count >= min_listings
+        and signal.price_level_count >= min_price_levels
     ]
     signals.sort(key=lambda s: s.pressure_score, reverse=True)
     signals = signals[:top]
@@ -110,7 +117,7 @@ small {{ opacity: .65; }}
 <strong>Interpretation:</strong> Reference price ignores tiny floor listings by pricing the first meaningful slice of visible inventory.
 Baseline changes compare the newest snapshot with the median of prior snapshots in the recent window.
 Trend counts repeated intervals where reference price held or rose while near-market depth fell.
-Breadth is current auction listings / distinct price levels. The default report requires at least 50 listings and 5 price levels.
+Breadth is current auction listings / distinct price levels.
 Pressure is an explainable attention-ranking heuristic, not a buy or sell instruction.
 Observed depletion is not confirmed sales. Auctions can disappear because of purchases, cancellations, expirations, or reposting.
 </div>
