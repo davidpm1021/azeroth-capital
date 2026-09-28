@@ -17,6 +17,8 @@ class MarketSignal:
     total_quantity: int
     reference_depth_5pct: int
     approx_market_value: int
+    listing_count: int
+    price_level_count: int
     price_change_pct: float
     quantity_change_pct: float
     depth_5_change_pct: float
@@ -137,6 +139,8 @@ def signal_from_history(history: list[dict]) -> MarketSignal:
             current.get("approx_market_value")
             or (current_reference * int(current["total_quantity"]))
         ),
+        listing_count=int(current.get("listing_count") or 0),
+        price_level_count=int(current.get("price_level_count") or 0),
         price_change_pct=price_change,
         quantity_change_pct=quantity_change,
         depth_5_change_pct=depth_change,
