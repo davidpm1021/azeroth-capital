@@ -290,11 +290,17 @@ def analyze(
 def report(
     output: Path = typer.Option(Path("data/report.html"), "--output", "-o"),
     top: int = typer.Option(50, "--top", min=1, max=500),
+    expansion: str = typer.Option("Midnight", "--expansion"),
     open_report: bool = typer.Option(False, "--open"),
 ) -> None:
     """Generate a local HTML market report from collected data."""
     _, storage = services()
-    path = build_report(storage, output, top=top)
+    if expansion.casefold() != "all" and not storage.expansion_item_ids(expansion):
+        typer.echo(
+            f"No {expansion} catalog is loaded. Run: ac catalog-sync --expansion {expansion}"
+        )
+        raise typer.Exit(code=1)
+    path = build_report(storage, output, top=top, expansion=expansion)
     typer.echo(f"Report written: {path.resolve()}")
     if open_report:
         webbrowser.open(path.resolve().as_uri())
