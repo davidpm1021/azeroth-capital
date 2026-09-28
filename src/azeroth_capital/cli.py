@@ -146,6 +146,9 @@ def analyze(
     top: int = typer.Option(25, "--top", min=1, max=200),
     min_quantity: int = typer.Option(100, "--min-quantity", min=0),
     min_market_value_g: int = typer.Option(10_000, "--min-market-value-g", min=0),
+    min_listings: int = typer.Option(50, "--min-listings", min=0),
+    min_price_levels: int = typer.Option(5, "--min-price-levels", min=0),
+    mode: str = typer.Option("liquid", "--mode", help="liquid, thin, or all"),
     history: int = typer.Option(5, "--history", min=2, max=24),
     names: bool = typer.Option(True, "--names/--no-names"),
     output: Path | None = typer.Option(Path("data/latest_signals.csv"), "--output"),
@@ -167,6 +170,21 @@ def analyze(
         signal for signal in signals
         if signal.approx_market_value >= min_market_value_g * 10_000
     ]
+
+    if mode == "liquid":
+        signals = [
+            signal for signal in signals
+            if signal.listing_count >= min_listings
+            and signal.price_level_count >= min_price_levels
+        ]
+    elif mode == "thin":
+        signals = [
+            signal for signal in signals
+            if signal.listing_count < min_listings
+            or signal.price_level_count < min_price_levels
+        ]
+    elif mode != "all":
+        raise typer.BadParameter("--mode must be 'liquid', 'thin', or 'all'")
     signals.sort(key=lambda s: s.pressure_score, reverse=True)
     selected = signals[:top]
 
@@ -186,9 +204,9 @@ def analyze(
                     item_names[signal.item_id] = f"Item {signal.item_id}"
 
     typer.echo(
-        "Rank  Item                        Ref Price       Δ1hRef   ΔBaseRef  ΔBaseQty  ΔBaseNear  Trend  Pressure"
+        "Rank  Item                        Ref Price       Δ1hRef   ΔBaseRef  ΔBaseQty  ΔBaseNear  Trend  Breadth   Pressure"
     )
-    typer.echo("-" * 112)
+    typer.echo("-" * 124)
     for rank, signal in enumerate(selected, start=1):
         name = item_names.get(signal.item_id, f"Item {signal.item_id}")
         if len(name) > 28:
@@ -198,13 +216,16 @@ def analyze(
             f"{rank:>4}  {name:<28}  {format_money(signal.reference_price):>16}  "
             f"{signal.price_change_pct:>+7.1f}%  {signal.baseline_price_change_pct:>+8.1f}%  "
             f"{signal.baseline_quantity_change_pct:>+8.1f}%  "
-            f"{signal.baseline_depth_5_change_pct:>+9.1f}%  {trend:>5}  {signal.pressure_score:>8.1f}"
+            f"{signal.baseline_depth_5_change_pct:>+9.1f}%  {trend:>5}  "
+            f"{signal.listing_count:>4}/{signal.price_level_count:<3}  {signal.pressure_score:>8.1f}"
         )
 
     typer.echo("")
     typer.echo("Ref Price ignores tiny floor listings by pricing the first meaningful slice of inventory.")
     typer.echo("Base compares the latest snapshot with the median of earlier snapshots in the selected history window.")
-    typer.echo("Trend is tightening intervals / observed intervals. Pressure rewards repeated tightening.")
+    typer.echo("Trend is tightening intervals / observed intervals. Breadth is listings / distinct price levels.")
+    typer.echo("Default liquid mode requires at least 50 listings and 5 price levels; use --mode thin or --mode all to inspect the rest.")
+    typer.echo("Pressure rewards repeated tightening.")
     typer.echo("Pressure is an attention-ranking heuristic, not a buy/sell recommendation.")
     typer.echo("Depletion can reflect purchases, cancellations, expirations, or reposting.")
 
