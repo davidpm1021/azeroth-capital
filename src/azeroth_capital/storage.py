@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS commodity_level (
     item_id INTEGER NOT NULL,
     unit_price INTEGER NOT NULL,
     quantity INTEGER NOT NULL,
+    listing_count INTEGER,
     PRIMARY KEY (run_id, item_id, unit_price),
     FOREIGN KEY (run_id) REFERENCES collection_run(id)
 );
@@ -80,6 +81,8 @@ CREATE TABLE IF NOT EXISTS market_observation (
     reference_quantity INTEGER,
     reference_depth_5pct INTEGER,
     approx_market_value INTEGER,
+    listing_count INTEGER,
+    price_level_count INTEGER,
     PRIMARY KEY (run_id, item_id, market_type, connected_realm_id),
     FOREIGN KEY (run_id) REFERENCES collection_run(id)
 );
@@ -125,6 +128,7 @@ class Storage:
             conn.executescript(SCHEMA)
             self._migrate(conn)
             self._backfill_reference_metrics(conn)
+            self._backfill_market_breadth(conn)
 
     @staticmethod
     def _migrate(conn: sqlite3.Connection) -> None:
@@ -135,6 +139,13 @@ class Storage:
         if "source_modified_at" not in columns:
             conn.execute("ALTER TABLE collection_run ADD COLUMN source_modified_at TEXT")
 
+        commodity_columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(commodity_level)").fetchall()
+        }
+        if "listing_count" not in commodity_columns:
+            conn.execute("ALTER TABLE commodity_level ADD COLUMN listing_count INTEGER")
+
         observation_columns = {
             row["name"]
             for row in conn.execute("PRAGMA table_info(market_observation)").fetchall()
@@ -144,6 +155,8 @@ class Storage:
             "reference_quantity": "INTEGER",
             "reference_depth_5pct": "INTEGER",
             "approx_market_value": "INTEGER",
+            "listing_count": "INTEGER",
+            "price_level_count": "INTEGER",
         }
         for name, sql_type in additions.items():
             if name not in observation_columns:
@@ -206,6 +219,73 @@ class Storage:
                WHERE run_id=? AND item_id=? AND market_type='commodity'""",
             updates,
         )
+
+    @staticmethod
+    def _backfill_market_breadth(conn: sqlite3.Connection) -> None:
+        """Backfill listing breadth from retained raw Blizzard snapshots.
+
+        Older normalized rows predate listing_count, but the raw payloads still
+        contain every auction listing, so we can reconstruct breadth without
+        losing the user's collected history.
+        """
+        missing_runs = [
+            dict(row)
+            for row in conn.execute(
+                """SELECT DISTINCT cr.id AS run_id, cr.raw_path
+                   FROM collection_run cr
+                   JOIN market_observation mo ON mo.run_id=cr.id
+                   WHERE cr.success=1
+                     AND mo.market_type='commodity'
+                     AND (mo.listing_count IS NULL OR mo.price_level_count IS NULL)"""
+            ).fetchall()
+        ]
+        for run in missing_runs:
+            raw_path = Path(run["raw_path"])
+            if not raw_path.exists():
+                continue
+
+            try:
+                with gzip.open(raw_path, "rt", encoding="utf-8") as fh:
+                    payload = json.load(fh)
+            except (OSError, json.JSONDecodeError):
+                continue
+
+            counts: dict[int, int] = {}
+            level_counts: dict[tuple[int, int], int] = {}
+            for auction in payload.get("auctions", []):
+                try:
+                    item_id = int(auction["item"]["id"])
+                    unit_price = int(auction["unit_price"])
+                except (KeyError, TypeError, ValueError):
+                    continue
+                counts[item_id] = counts.get(item_id, 0) + 1
+                level_counts[(item_id, unit_price)] = (
+                    level_counts.get((item_id, unit_price), 0) + 1
+                )
+
+            per_item_levels: dict[int, int] = {}
+            for item_id, _ in level_counts:
+                per_item_levels[item_id] = per_item_levels.get(item_id, 0) + 1
+
+            conn.executemany(
+                """UPDATE market_observation
+                   SET listing_count=?, price_level_count=?
+                   WHERE run_id=? AND item_id=? AND market_type='commodity'""",
+                [
+                    (count, per_item_levels.get(item_id, 0), int(run["run_id"]), item_id)
+                    for item_id, count in counts.items()
+                ],
+            )
+
+            conn.executemany(
+                """UPDATE commodity_level
+                   SET listing_count=?
+                   WHERE run_id=? AND item_id=? AND unit_price=?""",
+                [
+                    (count, int(run["run_id"]), item_id, unit_price)
+                    for (item_id, unit_price), count in level_counts.items()
+                ],
+            )
 
     def raw_path_for_hash(self, source: str, digest: str) -> Path | None:
         with self.connect() as conn:
@@ -300,8 +380,19 @@ class Storage:
     def insert_commodity_levels(self, run_id: int, levels: Iterable[dict]) -> None:
         with self.connect() as conn:
             conn.executemany(
-                "INSERT INTO commodity_level(run_id,item_id,unit_price,quantity) VALUES (?,?,?,?)",
-                [(run_id, r["item_id"], r["unit_price"], r["quantity"]) for r in levels],
+                """INSERT INTO commodity_level(
+                    run_id,item_id,unit_price,quantity,listing_count
+                ) VALUES (?,?,?,?,?)""",
+                [
+                    (
+                        run_id,
+                        r["item_id"],
+                        r["unit_price"],
+                        r["quantity"],
+                        r.get("listing_count"),
+                    )
+                    for r in levels
+                ],
             )
 
     def insert_observations(
@@ -316,8 +407,9 @@ class Storage:
                 """INSERT INTO market_observation(
                     run_id,item_id,market_type,connected_realm_id,best_price,total_quantity,
                     quantity_at_best,depth_1pct,depth_5pct,depth_10pct,weighted_price,
-                    reference_price,reference_quantity,reference_depth_5pct,approx_market_value
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    reference_price,reference_quantity,reference_depth_5pct,approx_market_value,
+                    listing_count,price_level_count
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 [
                     (
                         run_id,
@@ -335,6 +427,8 @@ class Storage:
                         m.get("reference_quantity"),
                         m.get("reference_depth_5pct"),
                         m.get("approx_market_value"),
+                        m.get("listing_count"),
+                        m.get("price_level_count"),
                     )
                     for m in metrics
                 ],
