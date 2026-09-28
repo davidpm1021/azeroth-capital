@@ -1,0 +1,15 @@
+services:
+  azeroth-capital:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: azeroth-capital
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      AC_DATABASE_PATH: /app/data/azeroth_capital.db
+      AC_RAW_DIR: /app/data/raw
+      AC_POLL_INTERVAL_SECONDS: "3600"
+    volumes:
+      - ./data:/app/data
