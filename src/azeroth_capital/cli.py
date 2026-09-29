@@ -13,6 +13,7 @@ from .catalog import sync_expansion_catalog
 from .collector import Collector
 from .config import Settings
 from .demo import create_demo
+from .discovery import discover_features
 from .report import build_report
 from .storage import Storage
 from .temporal import signal_from_history
@@ -453,6 +454,69 @@ def backtest(
                 f"  {name[:30]:<30} pressure {result.pressure:>6.1f}  "
                 f"24h return {result.forward_return_pct:>+7.2f}%"
             )
+
+@app.command()
+def research(
+    expansion: str = typer.Option("Midnight", "--expansion", help="Expansion catalog name, or 'all'"),
+    history: int = typer.Option(5, "--history", min=2, max=24),
+    min_quantity: int = typer.Option(100, "--min-quantity", min=0),
+    min_market_value_g: int = typer.Option(10_000, "--min-market-value-g", min=0),
+    min_listings: int = typer.Option(50, "--min-listings", min=0),
+    min_price_levels: int = typer.Option(5, "--min-price-levels", min=0),
+) -> None:
+    """Discover which individual market features predict future returns."""
+    _, storage = services()
+    histories = storage.all_market_histories("commodity")
+
+    expansion_ids: set[int] | None = None
+    if expansion.casefold() != "all":
+        expansion_ids = storage.expansion_item_ids(expansion)
+        if not expansion_ids:
+            typer.echo(
+                f"No {expansion} catalog is loaded. Run: ac catalog-sync --expansion {expansion}"
+            )
+            raise typer.Exit(code=1)
+
+    results = discover_features(
+        histories,
+        item_ids=expansion_ids,
+        history_window=history,
+        min_quantity=min_quantity,
+        min_market_value_g=min_market_value_g,
+        min_listings=min_listings,
+        min_price_levels=min_price_levels,
+    )
+
+    if not results:
+        typer.echo("Not enough history to evaluate feature predictiveness yet.")
+        raise typer.Exit(code=0)
+
+    typer.echo(
+        "Feature                 Hor  Slices  Markets   Top20 Avg  Bottom20 Avg  "
+        "Spread   MedSpread  +Spread%  RankCorr"
+    )
+    typer.echo("-" * 112)
+
+    for row in results:
+        typer.echo(
+            f"{row.feature:<22} "
+            f"{row.horizon_hours:>3}h "
+            f"{row.slices:>7} "
+            f"{row.markets:>8} "
+            f"{row.top_return_pct:>+10.2f}% "
+            f"{row.bottom_return_pct:>+12.2f}% "
+            f"{row.spread_pct:>+7.2f}% "
+            f"{row.median_slice_spread_pct:>+9.2f}% "
+            f"{row.positive_spread_rate_pct:>8.1f}% "
+            f"{row.average_rank_correlation:>+8.3f}"
+        )
+
+    typer.echo("")
+    typer.echo("Interpretation:")
+    typer.echo("  Spread = average future return of the top 20% by feature minus the bottom 20%.")
+    typer.echo("  +Spread% = share of timestamp slices where that spread was positive.")
+    typer.echo("  RankCorr = average within-snapshot Spearman correlation with future return.")
+    typer.echo("  Positive Spread means higher feature values tended to outperform; negative means lower values did.")
 
 @app.command()
 def report(
