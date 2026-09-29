@@ -304,6 +304,9 @@ def backtest(
     settings, storage = services()
     histories = storage.all_market_histories("commodity")
 
+    if strategy not in {"pressure", "prebreak"}:
+        raise typer.BadParameter("--strategy must be 'pressure' or 'prebreak'")
+
     expansion_ids: set[int] | None = None
     if expansion.casefold() != "all":
         expansion_ids = storage.expansion_item_ids(expansion)
@@ -333,9 +336,6 @@ def backtest(
         all_signals.extend(signals)
         all_results.extend(results)
         all_baseline_results.extend(baseline_results)
-
-    if strategy not in {"pressure", "prebreak"}:
-        raise typer.BadParameter("--strategy must be 'pressure' or 'prebreak'")
 
     if strategy == "prebreak":
         criteria = (
