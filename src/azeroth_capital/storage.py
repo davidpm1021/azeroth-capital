@@ -104,6 +104,19 @@ CREATE TABLE IF NOT EXISTS expansion_item (
     PRIMARY KEY (expansion, item_id)
 );
 
+CREATE TABLE IF NOT EXISTS paper_signal (
+    strategy TEXT NOT NULL,
+    observed_at TEXT NOT NULL,
+    item_id INTEGER NOT NULL,
+    feature_value REAL NOT NULL,
+    percentile REAL NOT NULL,
+    rank INTEGER NOT NULL,
+    universe_size INTEGER NOT NULL,
+    entry_price INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (strategy, observed_at, item_id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_commodity_item ON commodity_level(item_id);
 CREATE INDEX IF NOT EXISTS idx_observation_item ON market_observation(item_id, market_type);
 CREATE INDEX IF NOT EXISTS idx_run_source_time ON collection_run(source, started_at);
@@ -631,6 +644,60 @@ class Storage:
             "expansion": expansion,
             "items": int(row["n"]) if row else 0,
             "updated_at": row["updated_at"] if row else None,
+        }
+
+    def insert_paper_signals(self, rows: list[dict]) -> int:
+        if not rows:
+            return 0
+        now = datetime.now(UTC).isoformat()
+        with self.connect() as conn:
+            before = conn.total_changes
+            conn.executemany(
+                """INSERT OR IGNORE INTO paper_signal(
+                    strategy,observed_at,item_id,feature_value,percentile,
+                    rank,universe_size,entry_price,created_at
+                ) VALUES (?,?,?,?,?,?,?,?,?)""",
+                [
+                    (
+                        row["strategy"],
+                        row["observed_at"],
+                        int(row["item_id"]),
+                        float(row["feature_value"]),
+                        float(row["percentile"]),
+                        int(row["rank"]),
+                        int(row["universe_size"]),
+                        int(row["entry_price"]),
+                        now,
+                    )
+                    for row in rows
+                ],
+            )
+            return conn.total_changes - before
+
+    def paper_signals(self, strategy: str | None = None) -> list[dict]:
+        sql = "SELECT * FROM paper_signal"
+        params: tuple = ()
+        if strategy is not None:
+            sql += " WHERE strategy=?"
+            params = (strategy,)
+        sql += " ORDER BY observed_at,item_id"
+        with self.connect() as conn:
+            return [dict(row) for row in conn.execute(sql, params).fetchall()]
+
+    def paper_status(self, strategy: str | None = None) -> dict:
+        sql = """SELECT COUNT(*) AS n,
+                        COUNT(DISTINCT observed_at) AS snapshots,
+                        MIN(observed_at) AS first_at,
+                        MAX(observed_at) AS last_at
+                 FROM paper_signal"""
+        params: tuple = ()
+        if strategy is not None:
+            sql += " WHERE strategy=?"
+            params = (strategy,)
+        with self.connect() as conn:
+            row = conn.execute(sql, params).fetchone()
+        return dict(row) if row else {
+            "n": 0, "snapshots": 0, "first_at": None, "last_at": None
         }
 
     def get_item(self, item_id: int) -> dict | None:
