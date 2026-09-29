@@ -7,6 +7,7 @@ from pathlib import Path
 
 import typer
 
+from .backtest import backtest_history, result_row, summarize_results
 from .blizzard import BlizzardClient
 from .catalog import sync_expansion_catalog
 from .collector import Collector
@@ -285,6 +286,133 @@ def analyze(
                 writer.writerows(rows)
             typer.echo(f"Saved latest signal report: {output}")
 
+
+@app.command()
+def backtest(
+    expansion: str = typer.Option("Midnight", "--expansion", help="Expansion catalog name, or 'all'"),
+    history: int = typer.Option(5, "--history", min=2, max=24),
+    min_pressure: float = typer.Option(30.0, "--min-pressure", min=0),
+    min_quantity: int = typer.Option(100, "--min-quantity", min=0),
+    min_market_value_g: int = typer.Option(10_000, "--min-market-value-g", min=0),
+    min_listings: int = typer.Option(50, "--min-listings", min=0),
+    min_price_levels: int = typer.Option(5, "--min-price-levels", min=0),
+    output: Path = typer.Option(Path("data/backtest.csv"), "--output", "-o"),
+) -> None:
+    """Measure realized 3h/6h/12h/24h returns after historical pressure signals."""
+    settings, storage = services()
+    histories = storage.all_market_histories("commodity")
+
+    expansion_ids: set[int] | None = None
+    if expansion.casefold() != "all":
+        expansion_ids = storage.expansion_item_ids(expansion)
+        if not expansion_ids:
+            typer.echo(
+                f"No {expansion} catalog is loaded. Run: ac catalog-sync --expansion {expansion}"
+            )
+            raise typer.Exit(code=1)
+
+    all_signals = []
+    all_results = []
+    for (item_id, _), rows in histories.items():
+        if expansion_ids is not None and item_id not in expansion_ids:
+            continue
+        signals, results = backtest_history(
+            rows,
+            history_window=history,
+            min_pressure=min_pressure,
+            min_quantity=min_quantity,
+            min_market_value_g=min_market_value_g,
+            min_listings=min_listings,
+            min_price_levels=min_price_levels,
+        )
+        all_signals.extend(signals)
+        all_results.extend(results)
+
+    typer.echo(
+        f"Historical qualifying signals: {len(all_signals):,} "
+        f"({expansion}, pressure >= {min_pressure:.1f})"
+    )
+
+    summaries = summarize_results(all_results)
+    if not summaries:
+        typer.echo("Not enough future history yet to calculate forward returns.")
+        raise typer.Exit(code=0)
+
+    typer.echo("")
+    typer.echo("Horizon   Samples   Avg Return   Median   >0% Hit   >=5% Hit   >=10% Hit")
+    typer.echo("-" * 78)
+    for summary in summaries:
+        typer.echo(
+            f"{summary.horizon_hours:>5}h  "
+            f"{summary.samples:>8}  "
+            f"{summary.average_return_pct:>+10.2f}%  "
+            f"{summary.median_return_pct:>+7.2f}%  "
+            f"{summary.positive_rate_pct:>7.1f}%  "
+            f"{summary.return_5pct_rate_pct:>8.1f}%  "
+            f"{summary.return_10pct_rate_pct:>9.1f}%"
+        )
+
+    item_names: dict[int, str] = {}
+    interesting = sorted(
+        all_results,
+        key=lambda result: (result.horizon_hours, -result.pressure),
+    )
+    ids = {result.item_id for result in interesting}
+    for item_id in ids:
+        cached = storage.get_item(item_id)
+        if cached and cached.get("name"):
+            item_names[item_id] = cached["name"]
+
+    missing_ids = [item_id for item_id in ids if item_id not in item_names]
+    if missing_ids and settings.blizzard_client_id and settings.blizzard_client_secret:
+        with BlizzardClient(settings) as client:
+            for item_id in missing_ids[:100]:
+                try:
+                    payload = client.item(item_id)
+                    storage.upsert_item(item_id, payload)
+                    item_names[item_id] = payload.get("name") or f"Item {item_id}"
+                except Exception:
+                    item_names[item_id] = f"Item {item_id}"
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    rows = []
+    for result in all_results:
+        row = result_row(result)
+        row["name"] = item_names.get(result.item_id, f"Item {result.item_id}")
+        rows.append(row)
+
+    if rows:
+        fields = [
+            "name",
+            "item_id",
+            "signal_at",
+            "pressure",
+            "reference_price",
+            "horizon_hours",
+            "future_at",
+            "future_price",
+            "forward_return_pct",
+        ]
+        with output.open("w", newline="", encoding="utf-8") as fh:
+            writer = csv.DictWriter(fh, fieldnames=fields)
+            writer.writeheader()
+            writer.writerows(rows)
+        typer.echo("")
+        typer.echo(f"Saved {len(rows):,} realized forward returns to {output}")
+
+    completed_24h = [
+        result for result in all_results
+        if result.horizon_hours == 24
+    ]
+    if completed_24h:
+        typer.echo("")
+        typer.echo("Strongest completed 24h signal examples:")
+        for result in sorted(completed_24h, key=lambda r: r.pressure, reverse=True)[:10]:
+            name = item_names.get(result.item_id, f"Item {result.item_id}")
+            typer.echo(
+                f"  {name[:30]:<30} pressure {result.pressure:>6.1f}  "
+                f"24h return {result.forward_return_pct:>+7.2f}%"
+            )
 
 @app.command()
 def report(
