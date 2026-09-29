@@ -291,7 +291,9 @@ def analyze(
 def backtest(
     expansion: str = typer.Option("Midnight", "--expansion", help="Expansion catalog name, or 'all'"),
     history: int = typer.Option(5, "--history", min=2, max=24),
+    strategy: str = typer.Option("prebreak", "--strategy", help="prebreak or pressure"),
     min_pressure: float = typer.Option(30.0, "--min-pressure", min=0),
+    cooldown_hours: float = typer.Option(6.0, "--cooldown-hours", min=0),
     min_quantity: int = typer.Option(100, "--min-quantity", min=0),
     min_market_value_g: int = typer.Option(10_000, "--min-market-value-g", min=0),
     min_listings: int = typer.Option(50, "--min-listings", min=0),
@@ -320,7 +322,9 @@ def backtest(
         signals, results, baseline_results = backtest_history(
             rows,
             history_window=history,
+            strategy=strategy,
             min_pressure=min_pressure,
+            cooldown_hours=cooldown_hours,
             min_quantity=min_quantity,
             min_market_value_g=min_market_value_g,
             min_listings=min_listings,
@@ -330,9 +334,20 @@ def backtest(
         all_results.extend(results)
         all_baseline_results.extend(baseline_results)
 
+    if strategy not in {"pressure", "prebreak"}:
+        raise typer.BadParameter("--strategy must be 'pressure' or 'prebreak'")
+
+    if strategy == "prebreak":
+        criteria = (
+            "price near baseline, quantity <= -10%, near-depth <= -30%, "
+            "persistence >= 35%"
+        )
+    else:
+        criteria = f"pressure >= {min_pressure:.1f}"
+
     typer.echo(
-        f"Historical qualifying signals: {len(all_signals):,} "
-        f"({expansion}, pressure >= {min_pressure:.1f})"
+        f"Historical qualifying events: {len(all_signals):,} "
+        f"({expansion}, strategy={strategy}, {criteria}, cooldown={cooldown_hours:g}h)"
     )
 
     summaries = summarize_results(all_results)
@@ -367,7 +382,7 @@ def backtest(
         )
 
     typer.echo("")
-    typer.echo("Threshold hit rates for qualifying signals:")
+    typer.echo("Threshold hit rates for qualifying events:")
     typer.echo("Horizon   >=5% Hit   >=10% Hit")
     typer.echo("-" * 34)
     for summary in summaries:
