@@ -539,7 +539,7 @@ def paper_scan(
 
     typer.echo(
         f"Paper scan {observed_at}: universe={universe:,}, "
-        f"new candidates={inserted:,}, top={top_fraction:.0%}"
+        f"new frozen rows={inserted:,}, top/bottom={top_fraction:.0%}"
     )
 
 
@@ -547,11 +547,58 @@ def paper_scan(
 def paper_status() -> None:
     """Show prospective paper-signal collection status."""
     _, storage = services()
-    info = storage.paper_status("compression-gap-h5-q0.20")
-    typer.echo(f"Paper signals: {info['n']:,}")
+    info = storage.paper_status()
+    typer.echo(f"Paper rows: {info['n']:,}")
     typer.echo(f"Snapshot cohorts: {info['snapshots']:,}")
     typer.echo(f"First: {info['first_at'] or '-'}")
     typer.echo(f"Latest: {info['last_at'] or '-'}")
+
+
+@app.command("paper-candidates")
+def paper_candidates(
+    latest_only: bool = typer.Option(True, "--latest/--all"),
+) -> None:
+    """Show frozen prospective compression-gap cohorts."""
+    _, storage = services()
+    rows = storage.paper_signals()
+    if not rows:
+        typer.echo("No paper cohorts recorded yet.")
+        raise typer.Exit(code=0)
+
+    if latest_only:
+        latest = max(row["observed_at"] for row in rows)
+        rows = [row for row in rows if row["observed_at"] == latest]
+
+    item_ids = {int(row["item_id"]) for row in rows}
+    names = {}
+    for item_id in item_ids:
+        cached = storage.get_item(item_id)
+        if cached and cached.get("name"):
+            names[item_id] = cached["name"]
+
+    typer.echo("Group   Rank  Item                           Gap      Entry")
+    typer.echo("-" * 68)
+    for row in sorted(
+        rows,
+        key=lambda r: (
+            r["observed_at"],
+            0 if "-bottom-" not in r["strategy"] else 1,
+            int(r["rank"]),
+        ),
+    ):
+        group = "bottom" if "-bottom-" in row["strategy"] else "top"
+        item_id = int(row["item_id"])
+        name = names.get(item_id, f"Item {item_id}")
+        if len(name) > 30:
+            name = name[:29] + "…"
+        typer.echo(
+            f"{group:<7} {int(row['rank']):>4}  {name:<30} "
+            f"{float(row['feature_value']):>+8.2f}  {format_money(int(row['entry_price'])):>16}"
+        )
+
+    if latest_only:
+        typer.echo("")
+        typer.echo(f"Cohort: {rows[0]['observed_at']}")
 
 
 @app.command("paper-results")
@@ -566,23 +613,27 @@ def paper_results() -> None:
         raise typer.Exit(code=0)
 
     typer.echo(
-        "Horizon  Samples  Gross Avg  Gross Med   Net Avg   Net Med  Net >0%  Net >=5%"
+        "Horizon  Top N  Top Gross  Bottom Gross  Gross Spread  Top Net  Net Med  Net >0%  Net >=5%"
     )
-    typer.echo("-" * 82)
+    typer.echo("-" * 96)
     for row in summaries:
+        bottom = "-" if row["bottom_gross_avg"] is None else f"{row['bottom_gross_avg']:+.2f}%"
+        spread = "-" if row["gross_spread"] is None else f"{row['gross_spread']:+.2f}%"
         typer.echo(
             f"{row['horizon_hours']:>5}h "
-            f"{row['samples']:>8} "
+            f"{row['samples']:>6} "
             f"{row['gross_avg']:>+9.2f}% "
-            f"{row['gross_median']:>+9.2f}% "
+            f"{bottom:>12} "
+            f"{spread:>12} "
             f"{row['net_avg']:>+8.2f}% "
-            f"{row['net_median']:>+8.2f}% "
+            f"{row['net_median']:>+7.2f}% "
             f"{row['net_positive_rate']:>7.1f}% "
             f"{row['net_5pct_rate']:>8.1f}%"
         )
 
     typer.echo("")
-    typer.echo("Net assumes a 5% successful-sale Auction House cut and does not include slippage or failed sales.")
+    typer.echo("Gross Spread compares frozen top-vs-bottom compression-gap cohorts from the same prospective snapshots.")
+    typer.echo("Top Net assumes a 5% successful-sale Auction House cut and does not include slippage or failed sales.")
 
 @app.command()
 def report(
