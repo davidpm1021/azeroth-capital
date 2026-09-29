@@ -71,7 +71,7 @@ def test_paper_scan_and_results_are_prospective(tmp_path: Path):
         min_price_levels=0,
     )
 
-    assert inserted == 1
+    assert inserted == 2
     assert universe == 2
     assert observed_at is not None
 
@@ -82,16 +82,28 @@ def test_paper_scan_and_results_are_prospective(tmp_path: Path):
 def test_paper_summary_applies_auction_house_cut(tmp_path: Path):
     storage = Storage(tmp_path / "test.db", tmp_path / "raw")
     storage.init()
-    storage.insert_paper_signals([{
-        "strategy": "compression-gap-h5-q0.20",
-        "observed_at": "2026-09-27T00:00:00+00:00",
-        "item_id": 1,
-        "feature_value": 50.0,
-        "percentile": 1.0,
-        "rank": 1,
-        "universe_size": 10,
-        "entry_price": 10_000,
-    }])
+    storage.insert_paper_signals([
+        {
+            "strategy": "compression-gap-h5-q0.20",
+            "observed_at": "2026-09-27T00:00:00+00:00",
+            "item_id": 1,
+            "feature_value": 50.0,
+            "percentile": 1.0,
+            "rank": 1,
+            "universe_size": 10,
+            "entry_price": 10_000,
+        },
+        {
+            "strategy": "compression-gap-bottom-h5-q0.20",
+            "observed_at": "2026-09-27T00:00:00+00:00",
+            "item_id": 2,
+            "feature_value": -50.0,
+            "percentile": 0.1,
+            "rank": 1,
+            "universe_size": 10,
+            "entry_price": 10_000,
+        },
+    ])
 
     _seed_market(
         storage,
@@ -99,11 +111,21 @@ def test_paper_summary_applies_auction_house_cut(tmp_path: Path):
         [10_000, 10_000, 10_000, 12_000, 12_000, 12_000, 12_000, 12_000, 12_000, 12_000, 12_000, 12_000, 12_000],
         [1000] * 13,
     )
+    _seed_market(
+        storage,
+        2,
+        [10_000, 10_000, 10_000, 10_500, 10_500, 10_500, 10_500, 10_500, 10_500, 10_500, 10_500, 10_500, 10_500],
+        [1000] * 13,
+    )
 
     results = evaluate_paper(storage, horizons=(3,))
-    assert len(results) == 1
-    assert round(results[0].gross_return_pct, 1) == 20.0
-    assert round(results[0].net_return_pct, 1) == 14.0
+    assert len(results) == 2
+    top = next(row for row in results if row.group == "top")
+    bottom = next(row for row in results if row.group == "bottom")
+    assert round(top.gross_return_pct, 1) == 20.0
+    assert round(top.net_return_pct, 1) == 14.0
+    assert round(bottom.gross_return_pct, 1) == 5.0
 
     summary = summarize_paper(results)[0]
     assert round(summary["net_avg"], 1) == 14.0
+    assert round(summary["gross_spread"], 1) == 15.0
