@@ -541,6 +541,42 @@ class Storage:
             grouped.setdefault(key, []).append(row)
         return grouped
 
+    def all_market_histories(
+        self,
+        market_type: str = "commodity",
+    ) -> dict[tuple[int, int], list[dict]]:
+        """Return all distinct Blizzard snapshots per market, oldest to newest."""
+        sql = """
+        WITH unique_runs AS (
+            SELECT
+                cr.*,
+                ROW_NUMBER() OVER (
+                    PARTITION BY cr.source, cr.payload_hash
+                    ORDER BY cr.id
+                ) AS payload_rank
+            FROM collection_run cr
+            WHERE cr.success=1
+        )
+        SELECT
+            mo.*,
+            ur.started_at,
+            ur.source_modified_at,
+            COALESCE(ur.source_modified_at, ur.started_at) AS observed_at
+        FROM market_observation mo
+        JOIN unique_runs ur ON ur.id = mo.run_id
+        WHERE ur.payload_rank=1 AND mo.market_type=?
+        ORDER BY mo.item_id, mo.connected_realm_id,
+                 COALESCE(ur.source_modified_at, ur.started_at), mo.run_id
+        """
+        with self.connect() as conn:
+            rows = [dict(r) for r in conn.execute(sql, (market_type,)).fetchall()]
+
+        grouped: dict[tuple[int, int], list[dict]] = {}
+        for row in rows:
+            key = (int(row["item_id"]), int(row["connected_realm_id"]))
+            grouped.setdefault(key, []).append(row)
+        return grouped
+
     def latest_market_pairs(self, market_type: str = "commodity") -> list[tuple[dict, dict]]:
         histories = self.market_histories(market_type, snapshots=2)
         pairs = []
