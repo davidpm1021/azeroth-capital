@@ -15,6 +15,7 @@ AH_CUT_RATE = 0.05
 @dataclass(frozen=True)
 class PaperResult:
     strategy: str
+    group: str
     observed_at: str
     item_id: int
     rank: int
@@ -99,18 +100,36 @@ def scan_compression_gap(
 
     candidates.sort(key=lambda pair: pair[0], reverse=True)
     take = max(1, int(round(len(candidates) * top_fraction)))
-    selected = candidates[:take]
+    selected_top = candidates[:take]
+    selected_bottom = candidates[-take:]
 
     rows = []
-    for rank, (feature_value, signal) in enumerate(selected, start=1):
+    top_strategy = f"compression-gap-h{history_window}-q{top_fraction:.2f}"
+    bottom_strategy = f"compression-gap-bottom-h{history_window}-q{top_fraction:.2f}"
+
+    for rank, (feature_value, signal) in enumerate(selected_top, start=1):
         rows.append(
             {
-                "strategy": f"compression-gap-h{history_window}-q{top_fraction:.2f}",
+                "strategy": top_strategy,
                 "observed_at": latest_at,
                 "item_id": signal.item_id,
                 "feature_value": feature_value,
                 "percentile": 1.0 - ((rank - 1) / len(candidates)),
                 "rank": rank,
+                "universe_size": len(candidates),
+                "entry_price": signal.reference_price,
+            }
+        )
+
+    for reverse_rank, (feature_value, signal) in enumerate(reversed(selected_bottom), start=1):
+        rows.append(
+            {
+                "strategy": bottom_strategy,
+                "observed_at": latest_at,
+                "item_id": signal.item_id,
+                "feature_value": feature_value,
+                "percentile": reverse_rank / len(candidates),
+                "rank": reverse_rank,
                 "universe_size": len(candidates),
                 "entry_price": signal.reference_price,
             }
@@ -174,6 +193,7 @@ def evaluate_paper(
             results.append(
                 PaperResult(
                     strategy=signal["strategy"],
+                    group="bottom" if "-bottom-" in signal["strategy"] else "top",
                     observed_at=signal["observed_at"],
                     item_id=int(signal["item_id"]),
                     rank=int(signal["rank"]),
@@ -192,22 +212,39 @@ def evaluate_paper(
 
 def summarize_paper(results: list[PaperResult]) -> list[dict]:
     summaries = []
-    for horizon in sorted({row.horizon_hours for row in results}):
-        subset = [row for row in results if row.horizon_hours == horizon]
-        if not subset:
+    horizons = sorted({row.horizon_hours for row in results})
+    for horizon in horizons:
+        top = [
+            row for row in results
+            if row.horizon_hours == horizon and row.group == "top"
+        ]
+        bottom = [
+            row for row in results
+            if row.horizon_hours == horizon and row.group == "bottom"
+        ]
+        if not top:
             continue
-        gross = [row.gross_return_pct for row in subset]
-        net = [row.net_return_pct for row in subset]
+
+        top_gross = [row.gross_return_pct for row in top]
+        top_net = [row.net_return_pct for row in top]
+        bottom_gross = [row.gross_return_pct for row in bottom]
+
         summaries.append(
             {
                 "horizon_hours": horizon,
-                "samples": len(subset),
-                "gross_avg": mean(gross),
-                "gross_median": median(gross),
-                "net_avg": mean(net),
-                "net_median": median(net),
-                "net_positive_rate": sum(value > 0 for value in net) / len(net) * 100.0,
-                "net_5pct_rate": sum(value >= 5 for value in net) / len(net) * 100.0,
+                "samples": len(top),
+                "bottom_samples": len(bottom),
+                "gross_avg": mean(top_gross),
+                "gross_median": median(top_gross),
+                "bottom_gross_avg": mean(bottom_gross) if bottom_gross else None,
+                "gross_spread": (
+                    mean(top_gross) - mean(bottom_gross)
+                    if bottom_gross else None
+                ),
+                "net_avg": mean(top_net),
+                "net_median": median(top_net),
+                "net_positive_rate": sum(value > 0 for value in top_net) / len(top_net) * 100.0,
+                "net_5pct_rate": sum(value >= 5 for value in top_net) / len(top_net) * 100.0,
             }
         )
     return summaries
