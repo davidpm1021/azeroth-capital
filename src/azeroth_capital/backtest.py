@@ -75,15 +75,35 @@ def _future_row(
     return future
 
 
+def qualifies_strategy(
+    signal: MarketSignal,
+    strategy: str,
+    min_pressure: float,
+) -> bool:
+    if strategy == "pressure":
+        return signal.pressure_score >= min_pressure
+    if strategy == "prebreak":
+        return (
+            -5.0 <= signal.price_change_pct <= 10.0
+            and -5.0 <= signal.baseline_price_change_pct <= 15.0
+            and signal.baseline_quantity_change_pct <= -10.0
+            and signal.baseline_depth_5_change_pct <= -30.0
+            and signal.persistence_ratio >= 0.35
+        )
+    raise ValueError(f"Unknown strategy: {strategy}")
+
+
 def backtest_history(
     history: list[dict],
     history_window: int = 5,
     horizons: tuple[int, ...] = (3, 6, 12, 24),
+    strategy: str = "pressure",
     min_pressure: float = 30.0,
     min_quantity: int = 100,
     min_market_value_g: int = 10_000,
     min_listings: int = 50,
     min_price_levels: int = 5,
+    cooldown_hours: float = 6.0,
 ) -> tuple[list[MarketSignal], list[ForwardResult], list[ForwardResult]]:
     """Return qualifying signals, their forward returns, and all eligible-market returns.
 
@@ -94,6 +114,8 @@ def backtest_history(
     signals: list[MarketSignal] = []
     signal_results: list[ForwardResult] = []
     baseline_results: list[ForwardResult] = []
+    in_event = False
+    last_event_at: datetime | None = None
 
     if len(history) < history_window:
         return signals, signal_results, baseline_results
@@ -112,9 +134,18 @@ def backtest_history(
             continue
 
         signal = signal_from_history(window)
-        qualifies = signal.pressure_score >= min_pressure
-        if qualifies:
+        qualifies = qualifies_strategy(signal, strategy, min_pressure)
+        signal_time = _parse_timestamp(signal.current_at)
+
+        cooldown_ok = (
+            last_event_at is None
+            or (signal_time - last_event_at).total_seconds() / 3600.0 >= cooldown_hours
+        )
+        new_event = qualifies and not in_event and cooldown_ok
+
+        if new_event:
             signals.append(signal)
+            last_event_at = signal_time
 
         for horizon in horizons:
             future = _future_row(history, idx, horizon)
@@ -132,8 +163,10 @@ def backtest_history(
                 forward_return_pct=_pct_change(future_price, signal.reference_price),
             )
             baseline_results.append(result)
-            if qualifies:
+            if new_event:
                 signal_results.append(result)
+
+        in_event = qualifies
 
     return signals, signal_results, baseline_results
 
