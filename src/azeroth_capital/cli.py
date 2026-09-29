@@ -313,10 +313,11 @@ def backtest(
 
     all_signals = []
     all_results = []
+    all_baseline_results = []
     for (item_id, _), rows in histories.items():
         if expansion_ids is not None and item_id not in expansion_ids:
             continue
-        signals, results = backtest_history(
+        signals, results, baseline_results = backtest_history(
             rows,
             history_window=history,
             min_pressure=min_pressure,
@@ -327,6 +328,7 @@ def backtest(
         )
         all_signals.extend(signals)
         all_results.extend(results)
+        all_baseline_results.extend(baseline_results)
 
     typer.echo(
         f"Historical qualifying signals: {len(all_signals):,} "
@@ -334,20 +336,43 @@ def backtest(
     )
 
     summaries = summarize_results(all_results)
+    baseline_summaries = summarize_results(all_baseline_results)
     if not summaries:
         typer.echo("Not enough future history yet to calculate forward returns.")
         raise typer.Exit(code=0)
 
+    baseline_by_horizon = {
+        summary.horizon_hours: summary for summary in baseline_summaries
+    }
+
     typer.echo("")
-    typer.echo("Horizon   Samples   Avg Return   Median   >0% Hit   >=5% Hit   >=10% Hit")
-    typer.echo("-" * 78)
+    typer.echo(
+        "Horizon  Signal N  Signal Avg  Baseline Avg  Excess Avg  "
+        "Signal Med  Baseline Med  >0% Hit"
+    )
+    typer.echo("-" * 96)
     for summary in summaries:
+        baseline = baseline_by_horizon.get(summary.horizon_hours)
+        if baseline is None:
+            continue
         typer.echo(
             f"{summary.horizon_hours:>5}h  "
             f"{summary.samples:>8}  "
             f"{summary.average_return_pct:>+10.2f}%  "
-            f"{summary.median_return_pct:>+7.2f}%  "
-            f"{summary.positive_rate_pct:>7.1f}%  "
+            f"{baseline.average_return_pct:>+12.2f}%  "
+            f"{summary.average_return_pct - baseline.average_return_pct:>+10.2f}%  "
+            f"{summary.median_return_pct:>+10.2f}%  "
+            f"{baseline.median_return_pct:>+12.2f}%  "
+            f"{summary.positive_rate_pct:>7.1f}%"
+        )
+
+    typer.echo("")
+    typer.echo("Threshold hit rates for qualifying signals:")
+    typer.echo("Horizon   >=5% Hit   >=10% Hit")
+    typer.echo("-" * 34)
+    for summary in summaries:
+        typer.echo(
+            f"{summary.horizon_hours:>5}h  "
             f"{summary.return_5pct_rate_pct:>8.1f}%  "
             f"{summary.return_10pct_rate_pct:>9.1f}%"
         )
