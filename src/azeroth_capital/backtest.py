@@ -84,12 +84,19 @@ def backtest_history(
     min_market_value_g: int = 10_000,
     min_listings: int = 50,
     min_price_levels: int = 5,
-) -> tuple[list[MarketSignal], list[ForwardResult]]:
+) -> tuple[list[MarketSignal], list[ForwardResult], list[ForwardResult]]:
+    """Return qualifying signals, their forward returns, and all eligible-market returns.
+
+    The baseline uses every market observation that met the exact same liquidity
+    rules at that historical moment, regardless of Pressure. This lets us ask
+    whether Pressure adds predictive information beyond the market's own drift.
+    """
     signals: list[MarketSignal] = []
-    results: list[ForwardResult] = []
+    signal_results: list[ForwardResult] = []
+    baseline_results: list[ForwardResult] = []
 
     if len(history) < history_window:
-        return signals, results
+        return signals, signal_results, baseline_results
 
     for idx in range(history_window - 1, len(history)):
         window = history[idx - history_window + 1 : idx + 1]
@@ -105,29 +112,30 @@ def backtest_history(
             continue
 
         signal = signal_from_history(window)
-        if signal.pressure_score < min_pressure:
-            continue
+        qualifies = signal.pressure_score >= min_pressure
+        if qualifies:
+            signals.append(signal)
 
-        signals.append(signal)
         for horizon in horizons:
             future = _future_row(history, idx, horizon)
             if future is None:
                 continue
             future_price = _reference_price(future)
-            results.append(
-                ForwardResult(
-                    item_id=signal.item_id,
-                    signal_at=signal.current_at,
-                    pressure=signal.pressure_score,
-                    reference_price=signal.reference_price,
-                    horizon_hours=horizon,
-                    future_at=_observed_at(future),
-                    future_price=future_price,
-                    forward_return_pct=_pct_change(future_price, signal.reference_price),
-                )
+            result = ForwardResult(
+                item_id=signal.item_id,
+                signal_at=signal.current_at,
+                pressure=signal.pressure_score,
+                reference_price=signal.reference_price,
+                horizon_hours=horizon,
+                future_at=_observed_at(future),
+                future_price=future_price,
+                forward_return_pct=_pct_change(future_price, signal.reference_price),
             )
+            baseline_results.append(result)
+            if qualifies:
+                signal_results.append(result)
 
-    return signals, results
+    return signals, signal_results, baseline_results
 
 
 def summarize_results(results: list[ForwardResult]) -> list[HorizonSummary]:
