@@ -1,0 +1,109 @@
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+
+from azeroth_capital.paper import evaluate_paper, scan_compression_gap, summarize_paper
+from azeroth_capital.storage import Storage
+
+
+def _seed_market(storage: Storage, item_id: int, prices: list[int], depths: list[int]) -> None:
+    start = datetime(2026, 9, 27, 0, 0, tzinfo=UTC)
+    for idx, (price, depth) in enumerate(zip(prices, depths)):
+        observed = start + timedelta(hours=idx)
+        payload_hash = f"{item_id}-{idx}"
+        raw = storage.raw_dir / f"{payload_hash}.json.gz"
+        raw.parent.mkdir(parents=True, exist_ok=True)
+        raw.write_bytes(b"")
+        run_id = storage.begin_run(
+            "us",
+            "commodities",
+            payload_hash,
+            raw,
+            source_modified_at=observed.isoformat(),
+        )
+        storage.insert_observations(
+            run_id,
+            [{
+                "item_id": item_id,
+                "best_price": price,
+                "quantity_at_best": 100,
+                "total_quantity": 1000,
+                "depth_1pct": depth,
+                "depth_5pct": depth,
+                "depth_10pct": depth,
+                "weighted_price": float(price),
+                "reference_price": price,
+                "reference_quantity": 20,
+                "reference_depth_5pct": depth,
+                "approx_market_value": price * 1000,
+                "listing_count": 100,
+                "price_level_count": 20,
+            }],
+            "commodity",
+        )
+        storage.finish_run(run_id)
+
+
+def test_paper_scan_and_results_are_prospective(tmp_path: Path):
+    storage = Storage(tmp_path / "test.db", tmp_path / "raw")
+    storage.init()
+    storage.replace_expansion_catalog("Midnight", {1: {"reagent"}, 2: {"reagent"}})
+
+    _seed_market(
+        storage,
+        1,
+        [10_000, 10_000, 10_000, 10_000, 10_000, 11_000, 12_000, 13_000, 14_000, 15_000, 16_000, 17_000, 18_000, 19_000, 20_000, 21_000, 22_000],
+        [1000, 900, 800, 700, 500, 450, 400, 350, 300, 280, 260, 240, 220, 200, 180, 160, 150],
+    )
+    _seed_market(
+        storage,
+        2,
+        [10_000] * 17,
+        [1000] * 17,
+    )
+
+    inserted, universe, observed_at = scan_compression_gap(
+        storage,
+        history_window=5,
+        top_fraction=0.5,
+        min_quantity=0,
+        min_market_value_g=0,
+        min_listings=0,
+        min_price_levels=0,
+    )
+
+    assert inserted == 1
+    assert universe == 2
+    assert observed_at is not None
+
+    # Paper signal is at the latest snapshot, so it should not have matured yet.
+    assert evaluate_paper(storage) == []
+
+
+def test_paper_summary_applies_auction_house_cut(tmp_path: Path):
+    storage = Storage(tmp_path / "test.db", tmp_path / "raw")
+    storage.init()
+    storage.insert_paper_signals([{
+        "strategy": "compression-gap-h5-q0.20",
+        "observed_at": "2026-09-27T00:00:00+00:00",
+        "item_id": 1,
+        "feature_value": 50.0,
+        "percentile": 1.0,
+        "rank": 1,
+        "universe_size": 10,
+        "entry_price": 10_000,
+    }])
+
+    _seed_market(
+        storage,
+        1,
+        [10_000, 10_000, 10_000, 12_000, 12_000, 12_000, 12_000, 12_000, 12_000, 12_000, 12_000, 12_000, 12_000],
+        [1000] * 13,
+    )
+
+    results = evaluate_paper(storage, horizons=(3,))
+    assert len(results) == 1
+    assert round(results[0].gross_return_pct, 1) == 20.0
+    assert round(results[0].net_return_pct, 1) == 14.0
+
+    summary = summarize_paper(results)[0]
+    assert round(summary["net_avg"], 1) == 14.0
