@@ -33,7 +33,7 @@ def _row(hour: int) -> dict:
 def test_backtest_generates_timestamp_aware_forward_returns():
     history = [_row(hour) for hour in range(30)]
 
-    signals, results = backtest_history(
+    signals, results, baseline_results = backtest_history(
         history,
         history_window=5,
         min_pressure=0,
@@ -45,6 +45,8 @@ def test_backtest_generates_timestamp_aware_forward_returns():
 
     assert signals
     assert results
+    assert baseline_results
+    assert len(baseline_results) >= len(results)
     assert {result.horizon_hours for result in results} == {3, 6, 12, 24}
 
     first_3h = next(
@@ -60,7 +62,7 @@ def test_backtest_generates_timestamp_aware_forward_returns():
 def test_backtest_summary_reports_positive_hit_rate():
     history = [_row(hour) for hour in range(30)]
 
-    _, results = backtest_history(
+    _, results, baseline_results = backtest_history(
         history,
         history_window=5,
         min_pressure=0,
@@ -70,8 +72,13 @@ def test_backtest_summary_reports_positive_hit_rate():
         min_price_levels=0,
     )
     summaries = summarize_results(results)
+    baseline_summaries = summarize_results(baseline_results)
 
     summary_6h = next(summary for summary in summaries if summary.horizon_hours == 6)
+    baseline_6h = next(
+        summary for summary in baseline_summaries if summary.horizon_hours == 6
+    )
     assert summary_6h.samples > 0
     assert summary_6h.average_return_pct > 0
     assert summary_6h.positive_rate_pct > 0
+    assert baseline_6h.samples >= summary_6h.samples
