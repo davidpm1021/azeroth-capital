@@ -14,6 +14,7 @@ from .collector import Collector
 from .config import Settings
 from .demo import create_demo
 from .discovery import discover_features
+from .paper import evaluate_paper, scan_compression_gap, summarize_paper
 from .report import build_report
 from .storage import Storage
 from .temporal import signal_from_history
@@ -517,6 +518,71 @@ def research(
     typer.echo("  +Spread% = share of timestamp slices where that spread was positive.")
     typer.echo("  RankCorr = average within-snapshot Spearman correlation with future return.")
     typer.echo("  Positive Spread means higher feature values tended to outperform; negative means lower values did.")
+
+@app.command("paper-scan")
+def paper_scan(
+    expansion: str = typer.Option("Midnight", "--expansion"),
+    history: int = typer.Option(5, "--history", min=2, max=24),
+    top_fraction: float = typer.Option(0.20, "--top-fraction", min=0.01, max=0.50),
+) -> None:
+    """Freeze today's top compression-gap candidates for prospective evaluation."""
+    _, storage = services()
+    inserted, universe, observed_at = scan_compression_gap(
+        storage,
+        expansion=expansion,
+        history_window=history,
+        top_fraction=top_fraction,
+    )
+    if observed_at is None:
+        typer.echo("No current Blizzard snapshot/catalog available for paper scan.")
+        raise typer.Exit(code=1)
+
+    typer.echo(
+        f"Paper scan {observed_at}: universe={universe:,}, "
+        f"new candidates={inserted:,}, top={top_fraction:.0%}"
+    )
+
+
+@app.command("paper-status")
+def paper_status() -> None:
+    """Show prospective paper-signal collection status."""
+    _, storage = services()
+    info = storage.paper_status("compression-gap-h5-q0.20")
+    typer.echo(f"Paper signals: {info['n']:,}")
+    typer.echo(f"Snapshot cohorts: {info['snapshots']:,}")
+    typer.echo(f"First: {info['first_at'] or '-'}")
+    typer.echo(f"Latest: {info['last_at'] or '-'}")
+
+
+@app.command("paper-results")
+def paper_results() -> None:
+    """Evaluate prospective compression-gap candidates after AH cut."""
+    _, storage = services()
+    results = evaluate_paper(storage)
+    summaries = summarize_paper(results)
+
+    if not summaries:
+        typer.echo("No paper candidates have matured yet.")
+        raise typer.Exit(code=0)
+
+    typer.echo(
+        "Horizon  Samples  Gross Avg  Gross Med   Net Avg   Net Med  Net >0%  Net >=5%"
+    )
+    typer.echo("-" * 82)
+    for row in summaries:
+        typer.echo(
+            f"{row['horizon_hours']:>5}h "
+            f"{row['samples']:>8} "
+            f"{row['gross_avg']:>+9.2f}% "
+            f"{row['gross_median']:>+9.2f}% "
+            f"{row['net_avg']:>+8.2f}% "
+            f"{row['net_median']:>+8.2f}% "
+            f"{row['net_positive_rate']:>7.1f}% "
+            f"{row['net_5pct_rate']:>8.1f}%"
+        )
+
+    typer.echo("")
+    typer.echo("Net assumes a 5% successful-sale Auction House cut and does not include slippage or failed sales.")
 
 @app.command()
 def report(
