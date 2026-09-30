@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Iterable
 
 from .metrics import robust_market_fields
+from .timestamps import parse_timestamp
 
 
 SCHEMA = """
@@ -141,6 +142,7 @@ class Storage:
     def connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
+        conn.create_function("timestamp_epoch", 1, lambda value: parse_timestamp(value).timestamp(), deterministic=True)
         conn.execute("PRAGMA foreign_keys=ON")
         return conn
 
@@ -533,7 +535,7 @@ class Storage:
                 COALESCE(ur.source_modified_at, ur.started_at) AS observed_at,
                 ROW_NUMBER() OVER (
                     PARTITION BY mo.item_id, mo.connected_realm_id
-                    ORDER BY COALESCE(ur.source_modified_at, ur.started_at) DESC, mo.run_id DESC
+                    ORDER BY timestamp_epoch(COALESCE(ur.source_modified_at, ur.started_at)) DESC, mo.run_id DESC
                 ) AS rn
             FROM market_observation mo
             JOIN unique_runs ur ON ur.id = mo.run_id
@@ -579,7 +581,7 @@ class Storage:
         JOIN unique_runs ur ON ur.id = mo.run_id
         WHERE ur.payload_rank=1 AND mo.market_type=?
         ORDER BY mo.item_id, mo.connected_realm_id,
-                 COALESCE(ur.source_modified_at, ur.started_at), mo.run_id
+                 timestamp_epoch(COALESCE(ur.source_modified_at, ur.started_at)), mo.run_id
         """
         with self.connect() as conn:
             rows = [dict(r) for r in conn.execute(sql, (market_type,)).fetchall()]
@@ -680,24 +682,17 @@ class Storage:
         if strategy is not None:
             sql += " WHERE strategy=?"
             params = (strategy,)
-        sql += " ORDER BY observed_at,item_id"
+        sql += " ORDER BY timestamp_epoch(observed_at),item_id"
         with self.connect() as conn:
             return [dict(row) for row in conn.execute(sql, params).fetchall()]
 
     def paper_status(self, strategy: str | None = None) -> dict:
-        sql = """SELECT COUNT(*) AS n,
-                        COUNT(DISTINCT observed_at) AS snapshots,
-                        MIN(observed_at) AS first_at,
-                        MAX(observed_at) AS last_at
-                 FROM paper_signal"""
-        params: tuple = ()
-        if strategy is not None:
-            sql += " WHERE strategy=?"
-            params = (strategy,)
-        with self.connect() as conn:
-            row = conn.execute(sql, params).fetchone()
-        return dict(row) if row else {
-            "n": 0, "snapshots": 0, "first_at": None, "last_at": None
+        signals = self.paper_signals(strategy)
+        return {
+            "n": len(signals),
+            "snapshots": len({parse_timestamp(row["observed_at"]) for row in signals}),
+            "first_at": signals[0]["observed_at"] if signals else None,
+            "last_at": signals[-1]["observed_at"] if signals else None,
         }
 
     def get_item(self, item_id: int) -> dict | None:
@@ -744,7 +739,7 @@ class Storage:
         if item_id is not None:
             sql += " WHERE mo.item_id=?"
             params = (item_id,)
-        sql += " ORDER BY observed_at, mo.item_id"
+        sql += " ORDER BY timestamp_epoch(observed_at), mo.item_id"
 
         with self.connect() as conn:
             rows = conn.execute(sql, params).fetchall()

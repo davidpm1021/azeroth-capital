@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from datetime import datetime, timedelta
-from email.utils import parsedate_to_datetime
+from datetime import datetime
 from statistics import mean, median
 
+from .timestamps import future_row, parse_timestamp as _parse_timestamp
 from .temporal import MarketSignal, signal_from_history
 
 
@@ -31,13 +31,6 @@ class HorizonSummary:
     return_10pct_rate_pct: float
 
 
-def _parse_timestamp(value: str) -> datetime:
-    try:
-        return datetime.fromisoformat(value)
-    except ValueError:
-        return parsedate_to_datetime(value)
-
-
 def _observed_at(row: dict) -> str:
     return row.get("observed_at") or row.get("source_modified_at") or row["started_at"]
 
@@ -58,21 +51,7 @@ def _future_row(
     horizon_hours: int,
     tolerance_hours: float = 1.5,
 ) -> dict | None:
-    signal_time = _parse_timestamp(_observed_at(history[signal_index]))
-    target = signal_time + timedelta(hours=horizon_hours)
-
-    candidates = history[signal_index + 1 :]
-    if not candidates:
-        return None
-
-    future = min(
-        candidates,
-        key=lambda row: abs((_parse_timestamp(_observed_at(row)) - target).total_seconds()),
-    )
-    delta_hours = abs((_parse_timestamp(_observed_at(future)) - target).total_seconds()) / 3600.0
-    if delta_hours > tolerance_hours:
-        return None
-    return future
+    return future_row(history, _observed_at(history[signal_index]), horizon_hours, tolerance_hours)
 
 
 def qualifies_strategy(

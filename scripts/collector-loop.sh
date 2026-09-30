@@ -11,7 +11,7 @@ while true; do
         echo "[$(date -u +'%Y-%m-%dT%H:%M:%SZ')] Collection failed; will retry next interval." >&2
     fi
 
-    # Prospective experiment: freeze the top compression-gap quintile at each
+    # Prospective experiment: freeze the top and bottom compression-gap quintiles at each
     # distinct Blizzard snapshot. INSERT OR IGNORE makes repeated polls safe.
     ac paper-scan --expansion Midnight --history 5 --top-fraction 0.20 || true
 

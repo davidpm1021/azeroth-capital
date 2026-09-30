@@ -42,6 +42,17 @@ docker compose -f docker-compose.server.yml exec azeroth-capital ac analyze
 docker compose -f docker-compose.server.yml exec azeroth-capital ac catalog-sync --expansion Midnight
 ```
 
+## Inspect prospective results
+
+```bash
+docker compose -f docker-compose.server.yml exec azeroth-capital ac paper-status
+docker compose -f docker-compose.server.yml exec azeroth-capital ac paper-results --output data/paper-results.csv
+```
+
+See [RESEARCH.md](RESEARCH.md) before interpreting legacy and v2 results. Keep
+SQLite backups and the previous Docker image before deploying collector changes;
+do not replace the persistent data directory during a rebuild.
+
 ## Stop
 
 ```bash
