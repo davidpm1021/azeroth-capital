@@ -41,3 +41,9 @@ The Ubuntu collector freezes the top and bottom compression-gap quintiles at
 each new snapshot. `ac paper-status`, `ac paper-candidates`, and
 `ac paper-results --output data/paper-results.csv` inspect the experiment.
 See [RESEARCH.md](RESEARCH.md) for evaluation rules and the v2 restart.
+
+The collector also freezes price-discount, depth-only, and eligible-market
+benchmarks. `ac premise-results` compares these with v2 over identical complete
+cohorts, including entry at the next published snapshot after selection.
+`ac premise-research` runs the same comparison historically and labels it
+exploratory. Neither command simulates sale fills or automates in-game actions.

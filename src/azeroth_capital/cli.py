@@ -19,6 +19,7 @@ from .report import build_report
 from .storage import Storage
 from .temporal import signal_from_history
 from .timestamps import parse_timestamp
+from .premises import evaluate_premises, historical_cohorts, summarize_premises
 
 app = typer.Typer(no_args_is_help=True, help="Azeroth Capital auction-market data collector.")
 
@@ -555,13 +556,79 @@ def paper_status() -> None:
     typer.echo(f"Latest: {info['last_at'] or '-'}")
 
 
+@app.command("premise-scan")
+def premise_scan() -> None:
+    """Freeze v2 plus discount, depth-only and eligible-market comparisons."""
+    _, storage = services()
+    inserted, universe, stamp = scan_compression_gap(storage, include_benchmarks=True)
+    if stamp is None:
+        typer.echo("No current Blizzard snapshot/catalog available.")
+        raise typer.Exit(1)
+    typer.echo(f"Premise scan {stamp}: universe={universe}, new frozen rows={inserted}")
+    typer.echo("Rules: Midnight, history=5, quintile=20%; v2 selections unchanged.")
+
+
+def _print_premises(evaluation, output: Path | None, label: str) -> None:
+    typer.echo(label)
+    typer.echo(f"Cohorts seen={evaluation.cohorts_seen}, all four arms={evaluation.cohorts_with_all_arms}, "
+               f"complete in both entry modes={evaluation.cohorts_complete}")
+    if output is not None:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        from .premises import PremiseResult
+        with output.open("w", newline="", encoding="utf-8") as fh:
+            writer = csv.DictWriter(fh, fieldnames=list(PremiseResult.__dataclass_fields__))
+            writer.writeheader()
+            writer.writerows(asdict(row) for row in evaluation.results)
+        typer.echo(f"Exported {len(evaluation.results)} rows to {output}")
+    if not evaluation.results:
+        typer.echo("No complete matched outcomes yet; old cohorts are not backfilled.")
+        return
+    typer.echo("Entry          Premise       Cohorts  Net Avg  Item Med  Win%  vs Market  vs Discount")
+    for row in summarize_premises(evaluation):
+        typer.echo(f"{row['mode']:<14} {row['arm']:<13} {row['cohorts']:>7} "
+                   f"{row['net_avg']:>+7.2f}% {row['candidate_median']:>+8.2f}% "
+                   f"{row['positive_pct']:>5.1f} {row['excess_market_pp']:>+9.2f}pp "
+                   f"{row['excess_discount_pp']:>+10.2f}pp")
+    typer.echo("Averages and excess returns give each matched cohort equal weight.")
+    typer.echo("Both modes use the same complete cohorts; omitted outcomes may bias coverage.")
+    typer.echo("Next-snapshot entry follows the recorded selection/collection time; exits start from that entry.")
+    typer.echo("Quote returns after a modeled 5% cut, not fills or profits; overlap and sale risk remain.")
+
+
+@app.command("premise-results")
+def premise_results(
+    horizon: int = typer.Option(6, "--horizon", min=1, max=24),
+    output: Path | None = typer.Option(None, "--output", "-o"),
+) -> None:
+    """Compare prospectively frozen premises with matched latency scenarios."""
+    _, storage = services()
+    evaluation = evaluate_premises(storage.paper_signals(), storage.all_market_histories(), horizon)
+    _print_premises(evaluation, output, f"PROSPECTIVE comparison; horizon={horizon}h, history=5, quintile=20%")
+
+
+@app.command("premise-research")
+def premise_research(
+    horizon: int = typer.Option(6, "--horizon", min=1, max=24),
+    output: Path | None = typer.Option(None, "--output", "-o"),
+) -> None:
+    """Replay fixed premises historically; does not write paper selections."""
+    _, storage = services()
+    item_ids = storage.expansion_item_ids("Midnight")
+    if not item_ids:
+        raise typer.BadParameter("No Midnight catalog; run ac catalog-sync first")
+    histories = storage.all_market_histories()
+    frozen = historical_cohorts(histories, item_ids)
+    evaluation = evaluate_premises(frozen, histories, horizon)
+    _print_premises(evaluation, output, f"EXPLORATORY historical replay; horizon={horizon}h, history=5, quintile=20%")
+
+
 @app.command("paper-candidates")
 def paper_candidates(
     latest_only: bool = typer.Option(True, "--latest/--all"),
 ) -> None:
     """Show frozen prospective compression-gap cohorts."""
     _, storage = services()
-    rows = storage.paper_signals()
+    rows = [row for row in storage.paper_signals() if row["strategy"].startswith("compression-gap")]
     if not rows:
         typer.echo("No paper cohorts recorded yet.")
         raise typer.Exit(code=0)

@@ -56,6 +56,7 @@ def scan_compression_gap(
     min_market_value_g: int = 10_000,
     min_listings: int = 50,
     min_price_levels: int = 5,
+    include_benchmarks: bool = False,
 ) -> tuple[int, int, str | None]:
     expansion_ids = storage.expansion_item_ids(expansion)
     if not expansion_ids:
@@ -130,6 +131,11 @@ def scan_compression_gap(
             }
         )
 
+    if include_benchmarks:
+        from .premises import premise_rows
+        rows.extend(row for row in premise_rows(
+            [signal for _, signal in candidates], latest_at, history_window, top_fraction
+        ) if row["strategy"] != top_strategy)
     inserted = storage.insert_paper_signals(rows)
     return inserted, len(candidates), latest_at
 

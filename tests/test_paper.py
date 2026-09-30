@@ -84,6 +84,14 @@ def test_paper_scan_and_results_are_prospective(tmp_path: Path):
     # Paper signal is at the latest snapshot, so it should not have matured yet.
     assert evaluate_paper(storage) == []
 
+    # Adding economic benchmarks never rewrites an already frozen v2 selection.
+    original = storage.paper_signals()
+    added, _, _ = scan_compression_gap(storage, history_window=5, top_fraction=0.5,
+        min_quantity=0, min_market_value_g=0, min_listings=0, min_price_levels=0,
+        include_benchmarks=True)
+    assert added == 4  # One discount, one depth, and both eligible-market items.
+    assert [r for r in storage.paper_signals() if r['strategy'].startswith('compression-gap')] == original
+
 
 def test_paper_summary_applies_auction_house_cut(tmp_path: Path):
     storage = Storage(tmp_path / "test.db", tmp_path / "raw")
