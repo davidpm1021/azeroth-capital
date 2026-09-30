@@ -575,6 +575,7 @@ class Storage:
         SELECT
             mo.*,
             ur.started_at,
+            ur.completed_at,
             ur.source_modified_at,
             COALESCE(ur.source_modified_at, ur.started_at) AS observed_at
         FROM market_observation mo

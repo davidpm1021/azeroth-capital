@@ -52,3 +52,67 @@ filters fixed; any changed strategy needs another experiment identity.
 The next execution-oriented milestone is a conservative size/entry-latency and
 sale-fill model with a manual trade journal. A positive gross research spread
 alone does not justify deploying game gold.
+
+## Economic premise comparison — fixed September 30, 2026
+
+Use real-market mechanisms as hypotheses, not as evidence that WoW must offer
+a profitable opportunity. Cont, Kukanov and Stoikov study price impact from
+two-sided order flow and depth in stocks ([paper](https://arxiv.org/abs/1011.6402)).
+Our hourly sell listings lack their transaction and bid-side data: disappearing
+inventory is not confirmed buying, and our depth measure is not order-flow
+imbalance. Novy-Marx shows the overfitting risk of selecting combinations of many
+signals ([paper](https://www.nber.org/papers/w21329)); this comparison fixes a
+small set before prospective evaluation rather than optimizing combinations.
+
+`ac premise-scan` now runs in the hourly collector. It preserves v2 top/bottom
+selections and adds three separately named benchmarks, from exactly the same
+Midnight universe, five-observation history and entry liquidity filters:
+
+| Premise | Frozen rule | Question |
+|---|---|---|
+| Compression v2 | Existing gap top 20% | Does the current combined signal help? |
+| Price discount v1 | Lowest price change versus baseline, top 20% | Does simple cheapness outperform? |
+| Depth only v1 | Largest near-price depth reduction, top 20% | Does scarcity alone outperform? |
+| Eligible market v1 | All eligible items, equal weight | Is performance just general market movement? |
+
+The benchmark ranking uses item ID to resolve ties. The existing v2 scanner is
+unchanged. Benchmark rows record original entry prices and selection times;
+past cohorts are never backfilled in prospective storage. These are rankings,
+so the highest-ranked discount/depth items need not have a positive discount
+or compression in every snapshot. Overlap between arms is expected.
+
+Primary endpoint: **6-hour modeled net return**, equal weight per cohort, with
+paired excess versus market and discount. Three and twelve hours are descriptive
+sensitivity checks; do not pick a new horizon merely because it wins this sample.
+Keep both candidate and cohort medians visible. A head-to-head win is a practical
+strategy comparison, not proof of an isolated causal contribution from depth.
+
+`ac premise-results --output data/premise-results.csv` evaluates two scenarios:
+
+1. `source_quote`: the recorded selection quote, an optimistic price reference.
+2. `next_snapshot`: the first strictly later source quote at/after all four arms
+   were frozen, within 1.5h of that availability time. Start the holding period
+   from this new entry; do not charge the earlier entry price or keep its exit.
+
+The comparison uses only cohorts with all expected frozen members and valid
+entries/exits for **every arm in both scenarios**. Counts of seen, fully frozen,
+and fully evaluated cohorts expose omissions. Missing outcomes never rerank
+the entry universe or silently remove individual losers. Completeness filtering
+can still bias the sample; counts are descriptive, not independent trials.
+
+Next-snapshot entry is a latency sensitivity probe, not an executable fill:
+source quotes themselves reach us later, quantities are not modeled, and there
+is no sale-volume/fill evidence. Net includes only the modeled 5% sale cut.
+
+`ac premise-research --output data/premise-research.csv` applies the same fixed
+rules to past observations, selecting before inspecting future returns. It uses
+actual collection completion as the earliest information-availability time
+(collection start if completion is absent), and never writes paper rows. It
+requires at least ten eligible items per source time and holds the current
+Midnight catalog fixed. Treat its results as exploratory, not a holdout test.
+
+Decision gate: if compression fails to beat simple cheapness prospectively,
+drop the added complexity rather than tune it until it wins. If a candidate
+survives delay, costs and outlier checks, test conservative sizing and sell-fill
+assumptions next. Recipe input/output cost relationships and recurring demand
+cycles are later hypotheses requiring additional data and longer history.
