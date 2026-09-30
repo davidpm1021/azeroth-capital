@@ -3,6 +3,32 @@ from pathlib import Path
 from azeroth_capital.storage import Storage, payload_hash
 
 
+def test_http_dates_order_across_weekday_and_month_boundaries(tmp_path):
+    storage = Storage(tmp_path / "test.db", tmp_path / "raw")
+    storage.init()
+    times = ["Sun, 27 Sep 2026 23:00:00 GMT", "Mon, 28 Sep 2026 00:00:00 GMT",
+             "Wed, 30 Sep 2026 23:00:00 GMT", "Thu, 01 Oct 2026 00:00:00 GMT"]
+    # Insert out of order so run IDs cannot accidentally substitute for time.
+    for index in [2, 0, 3, 1]:
+        run = storage.begin_run("us", "commodities", str(index), tmp_path / str(index), times[index])
+        storage.insert_observations(run, [{"item_id": 42, "best_price": 100,
+            "total_quantity": 1000, "quantity_at_best": 100, "depth_1pct": 100,
+            "depth_5pct": 200, "depth_10pct": 300, "weighted_price": 100.0}], "commodity")
+        storage.finish_run(run)
+        storage.insert_paper_signals([dict(strategy="test", observed_at=times[index], item_id=42,
+                                          feature_value=1, percentile=1, rank=1, universe_size=5, entry_price=100)])
+    assert [r["observed_at"] for r in storage.all_market_histories()[(42, 0)]] == times
+    assert [r["observed_at"] for r in storage.market_histories(snapshots=2)[(42, 0)]] == times[-2:]
+    assert [r["observed_at"] for r in storage.paper_signals()] == times
+    assert storage.paper_status()["first_at"] == times[0]
+    assert storage.paper_status()["last_at"] == times[-1]
+    import csv
+    output = tmp_path / "history.csv"
+    storage.export_observations(output)
+    with output.open() as f:
+        assert [r["observed_at"] for r in csv.DictReader(f)] == times
+
+
 def test_repeated_poll_keeps_time_series_but_reuses_raw_blob(tmp_path: Path):
     storage = Storage(tmp_path / "test.db", tmp_path / "raw")
     storage.init()

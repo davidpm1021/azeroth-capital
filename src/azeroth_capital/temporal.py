@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
-from email.utils import parsedate_to_datetime
 from math import isfinite
 from statistics import median
+
+from .timestamps import parse_timestamp as _parse_timestamp
 
 
 @dataclass(frozen=True)
@@ -42,13 +42,6 @@ def _pct_change(current: float, previous: float) -> float:
 
 def _observed_at(row: dict) -> str:
     return row.get("observed_at") or row.get("source_modified_at") or row["started_at"]
-
-
-def _parse_timestamp(value: str) -> datetime:
-    try:
-        return datetime.fromisoformat(value)
-    except ValueError:
-        return parsedate_to_datetime(value)
 
 
 def _reference_price(row: dict) -> int:

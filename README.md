@@ -34,3 +34,10 @@ No Blizzard credentials are required to run the synthetic end-to-end demo:
 ```
 
 Development happens on the `development` branch. Stable releases are merged to `main`.
+
+## Prospective research
+
+The Ubuntu collector freezes the top and bottom compression-gap quintiles at
+each new snapshot. `ac paper-status`, `ac paper-candidates`, and
+`ac paper-results --output data/paper-results.csv` inspect the experiment.
+See [RESEARCH.md](RESEARCH.md) for evaluation rules and the v2 restart.

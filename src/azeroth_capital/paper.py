@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
-from email.utils import parsedate_to_datetime
+from collections import defaultdict
 from statistics import mean, median
 
 from .storage import Storage
+from .timestamps import future_row, parse_timestamp as _parse_timestamp
 from .temporal import signal_from_history
 
 
@@ -27,13 +27,6 @@ class PaperResult:
     future_price: int
     gross_return_pct: float
     net_return_pct: float
-
-
-def _parse_timestamp(value: str) -> datetime:
-    try:
-        return datetime.fromisoformat(value)
-    except ValueError:
-        return parsedate_to_datetime(value)
 
 
 def _observed_at(row: dict) -> str:
@@ -104,8 +97,10 @@ def scan_compression_gap(
     selected_bottom = candidates[-take:]
 
     rows = []
-    top_strategy = f"compression-gap-h{history_window}-q{top_fraction:.2f}"
-    bottom_strategy = f"compression-gap-bottom-h{history_window}-q{top_fraction:.2f}"
+    # v2 starts a new prospective series after correcting HTTP-date ordering.
+    # Keep the original rows intact; do not silently pool corrected selections.
+    top_strategy = f"compression-gap-v2-h{history_window}-q{top_fraction:.2f}"
+    bottom_strategy = f"compression-gap-bottom-v2-h{history_window}-q{top_fraction:.2f}"
 
     for rank, (feature_value, signal) in enumerate(selected_top, start=1):
         rows.append(
@@ -145,22 +140,7 @@ def _future_row(
     horizon_hours: int,
     tolerance_hours: float = 1.5,
 ) -> dict | None:
-    start = _parse_timestamp(observed_at)
-    target = start + timedelta(hours=horizon_hours)
-
-    candidates = [
-        row for row in history
-        if _parse_timestamp(_observed_at(row)) > start
-    ]
-    if not candidates:
-        return None
-
-    future = min(
-        candidates,
-        key=lambda row: abs((_parse_timestamp(_observed_at(row)) - target).total_seconds()),
-    )
-    error_hours = abs((_parse_timestamp(_observed_at(future)) - target).total_seconds()) / 3600.0
-    return future if error_hours <= tolerance_hours else None
+    return future_row(history, observed_at, horizon_hours, tolerance_hours)
 
 
 def evaluate_paper(
@@ -211,40 +191,51 @@ def evaluate_paper(
 
 
 def summarize_paper(results: list[PaperResult]) -> list[dict]:
+    """Keep experiments separate and compare controls only within matched times.
+
+    Candidate returns remain descriptive. Cohort means give each timestamp one
+    vote, but adjacent cohorts and repeated items are still dependent samples.
+    """
+    experiments = defaultdict(list)
+    for row in results:
+        strategy = row.strategy.replace("-bottom-", "-", 1)
+        experiments[(strategy, row.horizon_hours)].append(row)
     summaries = []
-    horizons = sorted({row.horizon_hours for row in results})
-    for horizon in horizons:
-        top = [
-            row for row in results
-            if row.horizon_hours == horizon and row.group == "top"
-        ]
-        bottom = [
-            row for row in results
-            if row.horizon_hours == horizon and row.group == "bottom"
-        ]
+    for (strategy, horizon), rows in sorted(experiments.items()):
+        top = [row for row in rows if row.group == "top"]
         if not top:
             continue
-
+        top_by_time = defaultdict(list)
+        bottom_by_time = defaultdict(list)
+        for row in rows:
+            group = top_by_time if row.group == "top" else bottom_by_time
+            group[_parse_timestamp(row.observed_at)].append(row)
+        matched = sorted(top_by_time.keys() & bottom_by_time.keys())
+        matched_top = [mean(r.gross_return_pct for r in top_by_time[t]) for t in matched]
+        matched_bottom = [mean(r.gross_return_pct for r in bottom_by_time[t]) for t in matched]
+        spreads = [a - b for a, b in zip(matched_top, matched_bottom)]
+        cohort_net = [mean(r.net_return_pct for r in group) for group in top_by_time.values()]
         top_gross = [row.gross_return_pct for row in top]
         top_net = [row.net_return_pct for row in top]
-        bottom_gross = [row.gross_return_pct for row in bottom]
-
-        summaries.append(
-            {
-                "horizon_hours": horizon,
-                "samples": len(top),
-                "bottom_samples": len(bottom),
-                "gross_avg": mean(top_gross),
-                "gross_median": median(top_gross),
-                "bottom_gross_avg": mean(bottom_gross) if bottom_gross else None,
-                "gross_spread": (
-                    mean(top_gross) - mean(bottom_gross)
-                    if bottom_gross else None
-                ),
-                "net_avg": mean(top_net),
-                "net_median": median(top_net),
-                "net_positive_rate": sum(value > 0 for value in top_net) / len(top_net) * 100.0,
-                "net_5pct_rate": sum(value >= 5 for value in top_net) / len(top_net) * 100.0,
-            }
-        )
+        summaries.append({
+            "strategy": strategy,
+            "horizon_hours": horizon,
+            "samples": len(top),
+            "bottom_samples": sum(row.group == "bottom" for row in rows),
+            "cohorts": len(top_by_time),
+            "matched_cohorts": len(matched),
+            "gross_avg": mean(top_gross),
+            "gross_median": median(top_gross),
+            "matched_top_gross_avg": mean(matched_top) if matched else None,
+            "bottom_gross_avg": mean(matched_bottom) if matched else None,
+            "gross_spread": mean(spreads) if matched else None,
+            "positive_spread_rate": sum(v > 0 for v in spreads) / len(spreads) * 100 if spreads else None,
+            "net_avg": mean(top_net),
+            "net_median": median(top_net),
+            "net_positive_rate": sum(v > 0 for v in top_net) / len(top_net) * 100,
+            "net_5pct_rate": sum(v >= 5 for v in top_net) / len(top_net) * 100,
+            "cohort_net_avg": mean(cohort_net),
+            "cohort_net_median": median(cohort_net),
+            "cohort_net_positive_rate": sum(v > 0 for v in cohort_net) / len(cohort_net) * 100,
+        })
     return summaries

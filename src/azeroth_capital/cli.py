@@ -18,6 +18,7 @@ from .paper import evaluate_paper, scan_compression_gap, summarize_paper
 from .report import build_report
 from .storage import Storage
 from .temporal import signal_from_history
+from .timestamps import parse_timestamp
 
 app = typer.Typer(no_args_is_help=True, help="Azeroth Capital auction-market data collector.")
 
@@ -566,7 +567,7 @@ def paper_candidates(
         raise typer.Exit(code=0)
 
     if latest_only:
-        latest = max(row["observed_at"] for row in rows)
+        latest = max((row["observed_at"] for row in rows), key=parse_timestamp)
         rows = [row for row in rows if row["observed_at"] == latest]
 
     item_ids = {int(row["item_id"]) for row in rows}
@@ -581,7 +582,7 @@ def paper_candidates(
     for row in sorted(
         rows,
         key=lambda r: (
-            r["observed_at"],
+            parse_timestamp(r["observed_at"]),
             0 if "-bottom-" not in r["strategy"] else 1,
             int(r["rank"]),
         ),
@@ -602,7 +603,9 @@ def paper_candidates(
 
 
 @app.command("paper-results")
-def paper_results() -> None:
+def paper_results(
+    output: Path | None = typer.Option(None, "--output", "-o", help="Export all evaluated candidate returns as CSV."),
+) -> None:
     """Evaluate prospective compression-gap candidates after AH cut."""
     _, storage = services()
     results = evaluate_paper(storage)
@@ -612,28 +615,43 @@ def paper_results() -> None:
         typer.echo("No paper candidates have matured yet.")
         raise typer.Exit(code=0)
 
-    typer.echo(
-        "Horizon  Top N  Top Gross  Bottom Gross  Gross Spread  Top Net  Net Med  Net >0%  Net >=5%"
-    )
-    typer.echo("-" * 96)
+    if output is not None:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        with output.open("w", newline="", encoding="utf-8") as fh:
+            writer = csv.DictWriter(fh, fieldnames=list(asdict(results[0])))
+            writer.writeheader()
+            writer.writerows(asdict(row) for row in results)
+        typer.echo(f"Saved {len(results):,} evaluated rows to {output}")
+
+    current_strategy = None
     for row in summaries:
+        if row["strategy"] != current_strategy:
+            current_strategy = row["strategy"]
+            typer.echo(f"\nExperiment: {current_strategy}")
+            typer.echo("Horizon  Top N  Cohorts  Top Net Avg  Candidate Med  Net >0%  Cohort Net Avg  Cohort Med")
+            typer.echo("-" * 94)
+        typer.echo(
+            f"{row['horizon_hours']:>5}h {row['samples']:>6} {row['cohorts']:>8} "
+            f"{row['net_avg']:>+11.2f}% {row['net_median']:>+13.2f}% "
+            f"{row['net_positive_rate']:>7.1f}% {row['cohort_net_avg']:>+14.2f}% "
+            f"{row['cohort_net_median']:>+10.2f}%"
+        )
+
+    typer.echo("\nControls: equal weight per matched timestamp within each experiment")
+    for row in summaries:
+        top = "-" if row["matched_top_gross_avg"] is None else f"{row['matched_top_gross_avg']:+.2f}%"
         bottom = "-" if row["bottom_gross_avg"] is None else f"{row['bottom_gross_avg']:+.2f}%"
         spread = "-" if row["gross_spread"] is None else f"{row['gross_spread']:+.2f}%"
         typer.echo(
-            f"{row['horizon_hours']:>5}h "
-            f"{row['samples']:>6} "
-            f"{row['gross_avg']:>+9.2f}% "
-            f"{bottom:>12} "
-            f"{spread:>12} "
-            f"{row['net_avg']:>+8.2f}% "
-            f"{row['net_median']:>+7.2f}% "
-            f"{row['net_positive_rate']:>7.1f}% "
-            f"{row['net_5pct_rate']:>8.1f}%"
+            f"{row['strategy']} {row['horizon_hours']}h: matched={row['matched_cohorts']}, "
+            f"top={top}, bottom={bottom}, spread={spread}"
         )
 
     typer.echo("")
-    typer.echo("Gross Spread compares frozen top-vs-bottom compression-gap cohorts from the same prospective snapshots.")
-    typer.echo("Top Net assumes a 5% successful-sale Auction House cut and does not include slippage or failed sales.")
+    typer.echo("Exit is the first observation at/after the horizon, at most 1.5h late.")
+    typer.echo("Cohorts overlap in time and repeat items; counts are not independent trials.")
+    typer.echo("Net models a 5% successful-sale cut on reference prices; it excludes slippage and failed sales.")
+    typer.echo("Legacy experiments retain their frozen selections, including any historical date-ordering defects.")
 
 @app.command()
 def report(
