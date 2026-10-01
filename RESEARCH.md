@@ -116,3 +116,51 @@ drop the added complexity rather than tune it until it wins. If a candidate
 survives delay, costs and outlier checks, test conservative sizing and sell-fill
 assumptions next. Recipe input/output cost relationships and recurring demand
 cycles are later hypotheses requiring additional data and longer history.
+
+## Price-level and sell-through stress — October 1, 2026
+
+`ac execution-stress --budget-g 1000 --inventory-share 0.01 --horizon 6
+--output data/execution-stress.csv` adds a diagnostic without changing any
+selection rule or writing paper rows. The default is a hypothetical 1,000g
+budget per candidate and a cap of 1% of that item's visible units. This is a
+scenario, not a recommended allocation or a user-specified bankroll. Fixed
+100g and 5,000g scenarios can show size sensitivity; choosing the best observed
+size would require a new prospective validation.
+
+Only complete prospective premise cohorts enter, using the same delayed entry
+and its six-hour exit. Each purchase walks stored asks from cheapest upward,
+buying whole units until budget, visible quantity or the unit cap runs out.
+Unspent gold remains cash; an unaffordable item remains in the comparison with
+zero purchase. Books must match exact source times; missing books exclude the
+whole paired cohort, never just the difficult candidate. No later book or
+reference-price substitution is allowed.
+
+The concentration check reports the largest positive item's net contribution
+across all included cohorts. Replacing that contribution with idle cash retains
+the original budget denominators, without reallocating to other items. This is
+a fragility diagnostic selected after observing outcomes, not a new strategy
+filter or an unbiased estimate of future returns.
+
+The exit scenario uses the lowest positive-quantity ask at the future exit,
+**conditional on selling at that price**. It is not a bid or evidence of fills.
+Small or fleeting listings can distort that floor. Net proceeds apply a modeled
+5% sale cut to total proceeds, rounded down to copper; actual per-sale fee
+rounding, deposits, relisting, competing buyers/sellers and reactions to our
+own purchases are not modeled. Source books arrive with collection latency,
+so even modeled entry purchases are hypothetical.
+
+The table gives mean return on allocated budget, including idle cash, with equal
+weight per cohort. This differs from the equal-candidate reference-price return
+in `premise-results` and must not be presented as a pure slippage deduction.
+CSV records actual modeled cost, quantity, unused cash, entry average, exit
+floor, original exit reference, horizon and timestamps. The minimum break-even
+exit price assumes all units sell; break-even units/sell percentage assumes the
+exit floor. A percentage above 100 means selling every purchased unit at that
+price still cannot recover purchase cost after fees.
+
+The export also shows cash recovered if half the units sell (rounded down),
+and units remaining. Unrecovered purchase cost is not realized loss: unsold
+inventory still exists and is not assigned a zero value. Adjacent orders can
+reuse the same capital and inventory; these are separate hypothetical orders,
+not a feasible portfolio simulation. A manual trade journal and observed sales
+are required before making claims about fill rates or realized profitability.

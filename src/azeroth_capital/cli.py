@@ -20,6 +20,7 @@ from .storage import Storage
 from .temporal import signal_from_history
 from .timestamps import parse_timestamp
 from .premises import evaluate_premises, historical_cohorts, summarize_premises
+from .execution import ExecutionResult, stress_execution, summarize_execution
 
 app = typer.Typer(no_args_is_help=True, help="Azeroth Capital auction-market data collector.")
 
@@ -620,6 +621,48 @@ def premise_research(
     frozen = historical_cohorts(histories, item_ids)
     evaluation = evaluate_premises(frozen, histories, horizon)
     _print_premises(evaluation, output, f"EXPLORATORY historical replay; horizon={horizon}h, history=5, quintile=20%")
+
+
+@app.command("execution-stress")
+def execution_stress(
+    budget_g: int = typer.Option(1000, "--budget-g", min=1, help="Hypothetical budget per candidate, not an instruction to trade."),
+    inventory_share: float = typer.Option(0.01, "--inventory-share", min=0.000001, max=1.0),
+    horizon: int = typer.Option(6, "--horizon", min=1, max=24),
+    output: Path | None = typer.Option(None, "--output", "-o"),
+) -> None:
+    """Stress prospective delayed entries against stored asks and sale assumptions."""
+    _, storage = services()
+    premise = evaluate_premises(storage.paper_signals(), storage.all_market_histories(), horizon)
+    evaluation = stress_execution(premise, storage.commodity_book, budget_g, inventory_share)
+    typer.echo(f"CONDITIONAL price-level stress: {budget_g}g per candidate, "
+               f"at most {inventory_share:.2%} of visible units, {horizon}h after delayed entry")
+    typer.echo(f"Mature premise cohorts={evaluation.premise_cohorts}, complete books={evaluation.complete_book_cohorts}, "
+               f"missing book orders={evaluation.missing_book_orders}")
+    if output is not None:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        with output.open('w', newline='', encoding='utf-8') as fh:
+            writer = csv.DictWriter(fh, fieldnames=list(ExecutionResult.__dataclass_fields__))
+            writer.writeheader()
+            writer.writerows(asdict(r) for r in evaluation.results)
+        typer.echo(f"Exported {len(evaluation.results)} hypothetical orders to {output}")
+    typer.echo("Premise       Cohorts Bought/All Budget used  All-sold ROI/budget  All-sold item med  Breakeven sold")
+    def fmt(value):
+        return '-' if value is None else f'{value:+.2f}%'
+    summaries = summarize_execution(evaluation)
+    for row in summaries:
+        typer.echo(f"{row['arm']:<13} {row['cohorts']:>7} {row['purchased_orders']:>4}/{row['orders']:<4} "
+                   f"{row['mean_budget_used_pct']:>9.1f}% {row['all_sold_return_on_budget_pct']:>+19.2f}% "
+                   f"{fmt(row['median_all_sold_order_pct']):>18} {fmt(row['median_break_even_sell_pct']):>15}")
+    for row in summaries:
+        if row['largest_positive_item_id'] is not None:
+            typer.echo(f"{row['arm']}: largest positive contributor item {row['largest_positive_item_id']} "
+                       f"adds {row['largest_positive_item_contribution_pp']:.2f}pp; replacing its contribution "
+                       f"with idle cash gives {row['return_without_largest_positive_item_pct']:+.2f}%.")
+    typer.echo("Purchases walk stored asks; exits use the future lowest ask IF all units sell there.")
+    typer.echo("Breakeven sold above 100% means even a full sale cannot recover purchase cost after the 5% cut.")
+    typer.echo("CSV includes 50%-sold cash recovery and unsold units; it does not value unsold inventory as zero.")
+    typer.echo("Asks do not prove fills. This excludes deposits, relisting, competition and market reaction to purchases.")
+    typer.echo("Orders overlap and reuse capital; this is not a portfolio backtest or a buy recommendation.")
 
 
 @app.command("paper-candidates")
