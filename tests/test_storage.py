@@ -67,3 +67,22 @@ def test_item_cache_round_trip(tmp_path: Path):
     assert item is not None
     assert item["name"] == "Test Herb"
     assert item["item_subclass"] == "Herb"
+
+
+def test_commodity_book_requires_exact_time_and_successful_commodity_source(tmp_path):
+    storage = Storage(tmp_path/'test.db', tmp_path/'raw')
+    storage.init()
+    stamp = 'Thu, 01 Oct 2026 01:00:00 GMT'
+    for source, time, error, price in [
+        ('commodities', stamp, 'failed', 1),
+        ('realm:1', stamp, None, 2),
+        ('commodities', stamp, None, 100),
+        ('commodities', '2026-10-01T01:00:00+00:00', None, 200),
+        ('commodities', '2026-10-01T02:00:00+00:00', None, 300),
+    ]:
+        run = storage.begin_run('us', source, str(price), tmp_path/str(price), time)
+        storage.insert_commodity_levels(run, [dict(item_id=42, unit_price=price, quantity=17)])
+        storage.finish_run(run, error)
+    assert storage.commodity_book(42, '2026-10-01T01:00:00+00:00') == [(100,17)]
+    assert storage.commodity_book(42, '2026-10-01T00:59:59+00:00') == []
+    assert storage.commodity_book(43, stamp) == []

@@ -47,3 +47,9 @@ benchmarks. `ac premise-results` compares these with v2 over identical complete
 cohorts, including entry at the next published snapshot after selection.
 `ac premise-research` runs the same comparison historically and labels it
 exploratory. Neither command simulates sale fills or automates in-game actions.
+
+`ac execution-stress --budget-g 1000 --output data/execution-stress.csv` tests
+those delayed entries against stored price levels. It reports purchase costs,
+unused budget, conditional full-sale returns, and sell-through needed to recover
+cost. Future asking prices do not establish actual sales; see the assumptions
+in [RESEARCH.md](RESEARCH.md).

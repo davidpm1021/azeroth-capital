@@ -601,6 +601,22 @@ class Storage:
                 pairs.append((history[-1], history[-2]))
         return pairs
 
+    def commodity_book(self, item_id: int, observed_at: str) -> list[tuple[int, int]]:
+        """Return stored asks at the exact source time; never use a later book."""
+        with self.connect() as conn:
+            run = conn.execute(
+                """SELECT id FROM collection_run
+                   WHERE success=1 AND source='commodities'
+                     AND timestamp_epoch(COALESCE(source_modified_at,started_at))=?
+                   ORDER BY id LIMIT 1""",
+                (parse_timestamp(observed_at).timestamp(),),
+            ).fetchone()
+            if run is None:
+                return []
+            return [(int(r['unit_price']), int(r['quantity'])) for r in conn.execute(
+                """SELECT unit_price,quantity FROM commodity_level
+                   WHERE run_id=? AND item_id=? ORDER BY unit_price""", (run['id'],item_id))]
+
     def replace_expansion_catalog(
         self,
         expansion: str,
